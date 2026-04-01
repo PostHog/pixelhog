@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pixelhog"
+version = "0.1.0"
+description = "Rust-accelerated pixelmatch and SSIM for PNG bytes"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">3.11"
+authors = [{ name = "PostHog" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Rust",
+  "Operating System :: OS Independent",
+  "License :: OSI Approved :: MIT License",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pillow>=10.0",
+]
+
+[tool.maturin]
+features = ["extension-module"]
+module-name = "pixelhog"
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+testpaths = ["python/tests"]
