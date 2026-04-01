@@ -7,6 +7,7 @@ use pixelmatch::pixelmatch_rgba;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use rayon::join;
 use ssim::compute_ssim_rgba;
 
 pub use pixelmatch::{PixelmatchOptions, PixelmatchOutput};
@@ -16,8 +17,12 @@ pub fn pixelmatch_png(
     current_png: &[u8],
     options: &PixelmatchOptions,
 ) -> Result<(Vec<u8>, usize, usize, usize), String> {
-    let (baseline_rgba, baseline_width, baseline_height) = decode_png_rgba(baseline_png)?;
-    let (current_rgba, current_width, current_height) = decode_png_rgba(current_png)?;
+    let (baseline_decoded, current_decoded) = join(
+        || decode_png_rgba(baseline_png),
+        || decode_png_rgba(current_png),
+    );
+    let (baseline_rgba, baseline_width, baseline_height) = baseline_decoded?;
+    let (current_rgba, current_width, current_height) = current_decoded?;
 
     let (baseline_padded, current_padded, width, height) = pad_images_to_largest_owned(
         baseline_rgba,
@@ -35,8 +40,12 @@ pub fn pixelmatch_png(
 }
 
 pub fn compute_ssim_png(baseline_png: &[u8], current_png: &[u8]) -> Result<f64, String> {
-    let (baseline_rgba, baseline_width, baseline_height) = decode_png_rgba(baseline_png)?;
-    let (current_rgba, current_width, current_height) = decode_png_rgba(current_png)?;
+    let (baseline_decoded, current_decoded) = join(
+        || decode_png_rgba(baseline_png),
+        || decode_png_rgba(current_png),
+    );
+    let (baseline_rgba, baseline_width, baseline_height) = baseline_decoded?;
+    let (current_rgba, current_width, current_height) = current_decoded?;
 
     let (baseline_padded, current_padded, width, height) = pad_images_to_largest_owned(
         baseline_rgba,
