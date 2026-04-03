@@ -1,5 +1,5 @@
 use image::ImageFormat;
-use pixelhog::{pixelmatch_png, PixelmatchOptions};
+use pixelhog::{diff_png, PixelmatchOptions};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -115,7 +115,7 @@ fn mapbox_canonical_fixture_suite() {
         let expected_diff_png = read_fixture(&fixtures, case.expected_diff);
 
         let (actual_diff_png, mismatch, width, height) =
-            pixelmatch_png(&left_png, &right_png, &case.options)
+            diff_png(&left_png, &right_png, &case.options)
                 .unwrap_or_else(|err| panic!("case {:?} failed to run: {err}", case));
 
         assert_eq!(

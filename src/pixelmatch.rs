@@ -38,6 +38,13 @@ pub struct PixelmatchOutput {
     pub height: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PixelmatchCountOutput {
+    pub diff_count: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
 pub fn pixelmatch_rgba(
     img1: &[u8],
     img2: &[u8],
@@ -150,6 +157,64 @@ pub fn pixelmatch_rgba(
     })
 }
 
+pub fn pixelmatch_count_rgba(
+    img1: &[u8],
+    img2: &[u8],
+    width: usize,
+    height: usize,
+    options: &PixelmatchOptions,
+) -> Result<PixelmatchCountOutput, String> {
+    validate_options(options)?;
+    validate_rgba_len(img1.len(), width, height)?;
+    validate_rgba_len(img2.len(), width, height)?;
+
+    let len = width
+        .checked_mul(height)
+        .ok_or_else(|| "image dimensions overflowed".to_string())?;
+
+    // Fast path: identical images.
+    if img1 == img2 {
+        return Ok(PixelmatchCountOutput {
+            diff_count: 0,
+            width,
+            height,
+        });
+    }
+
+    let max_delta = MAX_YIQ_DELTA * options.threshold * options.threshold;
+    let a32_buf = rgba_as_u32_slice(img1);
+    let b32_buf = rgba_as_u32_slice(img2);
+    let a32 = a32_buf.as_slice();
+    let b32 = b32_buf.as_slice();
+
+    let include_aa = options.include_aa;
+
+    let diff_count = if len >= PARALLEL_MIN_PIXELS {
+        (0..height)
+            .into_par_iter()
+            .map(|y| {
+                process_row_count(
+                    y, img1, img2, width, height, a32, b32, max_delta, include_aa,
+                )
+            })
+            .sum()
+    } else {
+        let mut diff = 0usize;
+        for y in 0..height {
+            diff += process_row_count(
+                y, img1, img2, width, height, a32, b32, max_delta, include_aa,
+            );
+        }
+        diff
+    };
+
+    Ok(PixelmatchCountOutput {
+        diff_count,
+        width,
+        height,
+    })
+}
+
 fn process_row(
     y: usize,
     row_out: &mut [u8],
@@ -199,6 +264,45 @@ fn process_row(
         } else {
             let gray = gray_pixel_value(img1, pixel_pos, alpha);
             draw_pixel(row_out, out_pos, gray, gray, gray);
+        }
+    }
+
+    diff_count
+}
+
+#[inline]
+fn process_row_count(
+    y: usize,
+    img1: &[u8],
+    img2: &[u8],
+    width: usize,
+    height: usize,
+    a32: &[u32],
+    b32: &[u32],
+    max_delta: f64,
+    include_aa: bool,
+) -> usize {
+    let mut diff_count = 0usize;
+    let row_offset_pixels = y * width;
+
+    for x in 0..width {
+        let pixel_index = row_offset_pixels + x;
+        if a32[pixel_index] == b32[pixel_index] {
+            continue;
+        }
+
+        let pixel_pos = pixel_index * 4;
+        let delta = color_delta(img1, img2, pixel_pos, pixel_pos, false);
+        if delta.abs() <= max_delta {
+            continue;
+        }
+
+        let excluded_aa = !include_aa
+            && (antialiased(img1, x, y, width, height, a32, b32)
+                || antialiased(img2, x, y, width, height, b32, a32));
+
+        if !excluded_aa {
+            diff_count += 1;
         }
     }
 

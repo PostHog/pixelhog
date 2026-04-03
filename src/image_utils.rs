@@ -1,5 +1,6 @@
-use image::codecs::png::PngEncoder;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ColorType, ImageEncoder, ImageFormat};
+use std::borrow::Cow;
 
 pub type DecodedPng = (Vec<u8>, usize, usize);
 
@@ -24,7 +25,8 @@ pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u
     let height_u32 = u32::try_from(height).map_err(|_| "image height is too large".to_string())?;
 
     let mut out = Vec::new();
-    let encoder = PngEncoder::new(&mut out);
+    let encoder =
+        PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter);
     encoder
         .write_image(rgba, width_u32, height_u32, ColorType::Rgba8.into())
         .map_err(|err| format!("failed to encode PNG: {err}"))?;
@@ -32,6 +34,7 @@ pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u
     Ok(out)
 }
 
+#[allow(dead_code)]
 pub fn pad_images_to_largest_owned(
     img1: Vec<u8>,
     width1: usize,
@@ -60,6 +63,39 @@ pub fn pad_images_to_largest_owned(
         img2
     } else {
         pad_rgba_to_size(&img2, width2, height2, width, height)?
+    };
+
+    Ok((padded1, padded2, width, height))
+}
+
+pub fn pad_images_to_largest_cow<'a>(
+    img1: &'a [u8],
+    width1: usize,
+    height1: usize,
+    img2: &'a [u8],
+    width2: usize,
+    height2: usize,
+) -> Result<(Cow<'a, [u8]>, Cow<'a, [u8]>, usize, usize), String> {
+    validate_rgba_len(img1.len(), width1, height1)?;
+    validate_rgba_len(img2.len(), width2, height2)?;
+
+    let width = width1.max(width2);
+    let height = height1.max(height2);
+
+    if width == width1 && height == height1 && width == width2 && height == height2 {
+        return Ok((Cow::Borrowed(img1), Cow::Borrowed(img2), width, height));
+    }
+
+    let padded1 = if width == width1 && height == height1 {
+        Cow::Borrowed(img1)
+    } else {
+        Cow::Owned(pad_rgba_to_size(img1, width1, height1, width, height)?)
+    };
+
+    let padded2 = if width == width2 && height == height2 {
+        Cow::Borrowed(img2)
+    } else {
+        Cow::Owned(pad_rgba_to_size(img2, width2, height2, width, height)?)
     };
 
     Ok((padded1, padded2, width, height))

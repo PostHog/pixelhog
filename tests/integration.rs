@@ -1,7 +1,9 @@
 use approx::assert_relative_eq;
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder, ImageFormat};
-use pixelhog::{compute_ssim_png, pixelmatch_png, PixelmatchOptions};
+use pixelhog::{
+    compare_png, diff_count_png, diff_png, diff_rgba, ssim_png, ssim_rgba, PixelmatchOptions,
+};
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut out = Vec::new();
@@ -27,6 +29,16 @@ fn decode_png_dimensions(bytes: &[u8]) -> (u32, u32) {
     img.dimensions()
 }
 
+fn decode_png_rgba(bytes: &[u8]) -> (Vec<u8>, usize, usize) {
+    let rgba = image::load_from_memory_with_format(bytes, ImageFormat::Png)
+        .expect("png decode should succeed")
+        .to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let width = usize::try_from(w).expect("width should fit in usize");
+    let height = usize::try_from(h).expect("height should fit in usize");
+    (rgba.into_raw(), width, height)
+}
+
 #[test]
 fn test_identical_images_zero_diff() {
     let baseline = solid_png(16, 12, [240, 10, 20, 255]);
@@ -34,7 +46,7 @@ fn test_identical_images_zero_diff() {
 
     let options = PixelmatchOptions::default();
     let (diff_png, diff_count, width, height) =
-        pixelmatch_png(&baseline, &current, &options).expect("pixelmatch should succeed");
+        diff_png(&baseline, &current, &options).expect("pixelmatch should succeed");
 
     assert_eq!(diff_count, 0);
     assert_eq!((width, height), (16, 12));
@@ -50,7 +62,7 @@ fn test_completely_different_images_full_diff() {
 
     let options = PixelmatchOptions::default();
     let (_, diff_count, width, height) =
-        pixelmatch_png(&baseline, &current, &options).expect("pixelmatch should succeed");
+        diff_png(&baseline, &current, &options).expect("pixelmatch should succeed");
 
     assert_eq!((width, height), (10, 8));
     assert_eq!(diff_count, 80);
@@ -81,7 +93,7 @@ fn test_partial_diff() {
 
     let options = PixelmatchOptions::default();
     let (_, diff_count, _, _) =
-        pixelmatch_png(&baseline, &current, &options).expect("pixelmatch should succeed");
+        diff_png(&baseline, &current, &options).expect("pixelmatch should succeed");
 
     assert_eq!(diff_count, width * height / 2);
 }
@@ -93,7 +105,7 @@ fn test_different_sizes_pads_to_larger() {
 
     let options = PixelmatchOptions::default();
     let (_, diff_count, width, height) =
-        pixelmatch_png(&baseline, &current, &options).expect("pixelmatch should succeed");
+        diff_png(&baseline, &current, &options).expect("pixelmatch should succeed");
 
     assert_eq!((width, height), (12, 10));
     assert_eq!(diff_count, 40);
@@ -113,8 +125,8 @@ fn test_threshold_controls_sensitivity() {
         ..PixelmatchOptions::default()
     };
 
-    let (_, low_count, _, _) = pixelmatch_png(&baseline, &current, &low).expect("low threshold");
-    let (_, high_count, _, _) = pixelmatch_png(&baseline, &current, &high).expect("high threshold");
+    let (_, low_count, _, _) = diff_png(&baseline, &current, &low).expect("low threshold");
+    let (_, high_count, _, _) = diff_png(&baseline, &current, &high).expect("high threshold");
 
     assert!(low_count > high_count);
     assert_eq!(high_count, 0);
@@ -126,7 +138,7 @@ fn test_diff_image_is_valid_png() {
     let current = solid_png(6, 6, [0, 0, 255, 255]);
 
     let options = PixelmatchOptions::default();
-    let (diff_png, _, _, _) = pixelmatch_png(&baseline, &current, &options).expect("pixelmatch");
+    let (diff_png, _, _, _) = diff_png(&baseline, &current, &options).expect("pixelmatch");
 
     let decoded = image::load_from_memory_with_format(&diff_png, ImageFormat::Png)
         .expect("diff output should be a valid PNG")
@@ -140,7 +152,7 @@ fn test_ssim_identical_images_score_one() {
     let baseline = solid_png(64, 64, [20, 40, 80, 255]);
     let current = baseline.clone();
 
-    let score = compute_ssim_png(&baseline, &current).expect("ssim should succeed");
+    let score = ssim_png(&baseline, &current).expect("ssim should succeed");
     assert_relative_eq!(score, 1.0, epsilon = 1e-12);
 }
 
@@ -149,7 +161,7 @@ fn test_ssim_completely_different_images_low_score() {
     let baseline = solid_png(64, 64, [0, 0, 0, 255]);
     let current = solid_png(64, 64, [255, 255, 255, 255]);
 
-    let score = compute_ssim_png(&baseline, &current).expect("ssim should succeed");
+    let score = ssim_png(&baseline, &current).expect("ssim should succeed");
     assert!(score < 0.1);
 }
 
@@ -171,7 +183,7 @@ fn test_ssim_slight_difference_high_score() {
     let baseline = encode_png(&baseline_rgba, width, height);
     let current = encode_png(&current_rgba, width, height);
 
-    let score = compute_ssim_png(&baseline, &current).expect("ssim should succeed");
+    let score = ssim_png(&baseline, &current).expect("ssim should succeed");
     assert!(score > 0.98);
 }
 
@@ -180,7 +192,7 @@ fn test_ssim_small_images_below_window_size() {
     let baseline = solid_png(5, 5, [100, 100, 100, 255]);
     let current = solid_png(5, 5, [130, 130, 130, 255]);
 
-    let score = compute_ssim_png(&baseline, &current).expect("ssim should succeed");
+    let score = ssim_png(&baseline, &current).expect("ssim should succeed");
     assert!((0.0..=1.0).contains(&score));
     assert!(score < 1.0);
 }
@@ -190,8 +202,72 @@ fn test_ssim_different_sizes_pads_to_larger() {
     let baseline = solid_png(9, 9, [255, 255, 255, 255]);
     let current = solid_png(14, 14, [255, 255, 255, 255]);
 
-    let score = compute_ssim_png(&baseline, &current).expect("ssim should succeed");
+    let score = ssim_png(&baseline, &current).expect("ssim should succeed");
 
     assert!((0.0..=1.0).contains(&score));
     assert!(score < 1.0);
+}
+
+#[test]
+fn test_diff_count_png_matches_diff_png() {
+    let baseline = solid_png(14, 10, [20, 30, 40, 255]);
+    let current = solid_png(14, 10, [40, 30, 40, 255]);
+
+    let options = PixelmatchOptions {
+        threshold: 0.05,
+        ..PixelmatchOptions::default()
+    };
+
+    let (_, diff_count, width, height) = diff_png(&baseline, &current, &options).expect("diff");
+    let (count_only, count_w, count_h) =
+        diff_count_png(&baseline, &current, &options).expect("diff_count");
+
+    assert_eq!((width, height), (count_w, count_h));
+    assert_eq!(diff_count, count_only);
+}
+
+#[test]
+fn test_compare_png_return_diff_toggle() {
+    let baseline = solid_png(9, 9, [100, 100, 100, 255]);
+    let current = solid_png(9, 9, [255, 20, 20, 255]);
+    let options = PixelmatchOptions::default();
+
+    let (maybe_diff, diff_count, ssim, width, height) =
+        compare_png(&baseline, &current, &options, false).expect("compare without diff");
+    assert!(maybe_diff.is_none());
+    assert_eq!((width, height), (9, 9));
+    assert!(diff_count > 0);
+    assert!((0.0..=1.0).contains(&ssim));
+
+    let (maybe_diff, diff_count_with_img, ssim_with_img, width_with_img, height_with_img) =
+        compare_png(&baseline, &current, &options, true).expect("compare with diff");
+
+    assert_eq!((width_with_img, height_with_img), (9, 9));
+    assert_eq!(diff_count_with_img, diff_count);
+    assert_relative_eq!(ssim_with_img, ssim, epsilon = 1e-12);
+    assert!(maybe_diff.is_some());
+}
+
+#[test]
+fn test_rgba_and_png_paths_match() {
+    let baseline = solid_png(13, 7, [120, 20, 200, 255]);
+    let current = solid_png(13, 7, [100, 20, 200, 255]);
+    let options = PixelmatchOptions::default();
+
+    let (png_diff, png_diff_count, png_w, png_h) =
+        diff_png(&baseline, &current, &options).expect("png diff");
+    let png_ssim = ssim_png(&baseline, &current).expect("png ssim");
+
+    let (baseline_raw, bw, bh) = decode_png_rgba(&baseline);
+    let (current_raw, cw, ch) = decode_png_rgba(&current);
+    let (rgba_diff, rgba_diff_count, rgba_w, rgba_h) =
+        diff_rgba(&baseline_raw, bw, bh, &current_raw, cw, ch, &options).expect("rgba diff");
+    let rgba_ssim = ssim_rgba(&baseline_raw, bw, bh, &current_raw, cw, ch).expect("rgba ssim");
+
+    assert_eq!((rgba_w, rgba_h), (png_w, png_h));
+    assert_eq!(rgba_diff_count, png_diff_count);
+    assert_relative_eq!(rgba_ssim, png_ssim, epsilon = 1e-12);
+
+    let (png_raw, _, _) = decode_png_rgba(&png_diff);
+    assert_eq!(png_raw, rgba_diff);
 }

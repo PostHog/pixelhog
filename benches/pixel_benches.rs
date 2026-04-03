@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder};
-use pixelhog::{compute_ssim_png, pixelmatch_png, PixelmatchOptions};
+use pixelhog::{diff_png, ssim_png, PixelmatchOptions};
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut out = Vec::new();
@@ -75,7 +75,7 @@ fn bench_api(c: &mut Criterion) {
 
     group.bench_function("pixelmatch", |b| {
         b.iter(|| {
-            let (diff_png, diff_count, out_w, out_h) = pixelmatch_png(
+            let (diff_png, diff_count, out_w, out_h) = diff_png(
                 black_box(&baseline),
                 black_box(&current),
                 black_box(&options),
@@ -87,8 +87,8 @@ fn bench_api(c: &mut Criterion) {
 
     group.bench_function("compute_ssim", |b| {
         b.iter(|| {
-            let score = compute_ssim_png(black_box(&baseline), black_box(&current))
-                .expect("ssim benchmark");
+            let score =
+                ssim_png(black_box(&baseline), black_box(&current)).expect("ssim benchmark");
             black_box(score);
         })
     });

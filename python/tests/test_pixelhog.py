@@ -4,7 +4,20 @@ import math
 import pytest
 from PIL import Image, ImageDraw
 
-from pixelhog import compute_ssim, pixelmatch
+from pixelhog import (
+    compare,
+    compare_batch,
+    compare_rgba,
+    diff,
+    diff_batch,
+    diff_count,
+    diff_count_batch,
+    diff_count_rgba,
+    diff_rgba,
+    ssim,
+    ssim_batch,
+    ssim_rgba,
+)
 
 
 def decode_png_rgba(png_bytes: bytes) -> tuple[bytes, int, int]:
@@ -27,7 +40,9 @@ def solid_png(width: int, height: int, color: tuple[int, int, int, int]) -> byte
     return out.getvalue()
 
 
-def pad_rgba(raw: bytes, width: int, height: int, target_width: int, target_height: int) -> bytes:
+def pad_rgba(
+    raw: bytes, width: int, height: int, target_width: int, target_height: int
+) -> bytes:
     out = bytearray(target_width * target_height * 4)
     src_stride = width * 4
     dst_stride = target_width * 4
@@ -39,7 +54,9 @@ def pad_rgba(raw: bytes, width: int, height: int, target_width: int, target_heig
     return bytes(out)
 
 
-def color_delta_reference(img1: bytes, img2: bytes, k: int, m: int, y_only: bool) -> float:
+def color_delta_reference(
+    img1: bytes, img2: bytes, k: int, m: int, y_only: bool
+) -> float:
     r1, g1, b1, a1 = img1[k], img1[k + 1], img1[k + 2], img1[k + 3]
     r2, g2, b2, a2 = img2[m], img2[m + 1], img2[m + 2], img2[m + 3]
 
@@ -70,7 +87,9 @@ def color_delta_reference(img1: bytes, img2: bytes, k: int, m: int, y_only: bool
     return -delta if y > 0 else delta
 
 
-def has_many_siblings_reference(img: list[int], x1: int, y1: int, width: int, height: int) -> bool:
+def has_many_siblings_reference(
+    img: list[int], x1: int, y1: int, width: int, height: int
+) -> bool:
     x0 = max(x1 - 1, 0)
     y0 = max(y1 - 1, 0)
     x2 = min(x1 + 1, width - 1)
@@ -168,7 +187,11 @@ def pixelmatch_reference_png(
         for x in range(width):
             i = y * width + x
             pos = i * 4
-            delta = 0.0 if a32[i] == b32[i] else color_delta_reference(img1, img2, pos, pos, False)
+            delta = (
+                0.0
+                if a32[i] == b32[i]
+                else color_delta_reference(img1, img2, pos, pos, False)
+            )
 
             if abs(delta) > max_delta:
                 excluded_aa = (not include_aa) and (
@@ -273,7 +296,7 @@ def test_identical_images_zero_diff() -> None:
     baseline = solid_png(20, 15, (30, 40, 50, 255))
     current = baseline
 
-    diff_png, diff_count, width, height = pixelmatch(baseline, current)
+    diff_png, diff_count, width, height = diff(baseline, current)
 
     assert diff_count == 0
     assert (width, height) == (20, 15)
@@ -286,7 +309,7 @@ def test_completely_different_images_full_diff() -> None:
     baseline = solid_png(10, 10, (0, 0, 0, 255))
     current = solid_png(10, 10, (255, 255, 255, 255))
 
-    _, diff_count, width, height = pixelmatch(baseline, current)
+    _, diff_count, width, height = diff(baseline, current)
 
     assert (width, height) == (10, 10)
     assert diff_count == 100
@@ -305,7 +328,7 @@ def test_partial_diff() -> None:
     baseline_img.save(baseline_io, format="PNG")
     current_img.save(current_io, format="PNG")
 
-    _, diff_count, _, _ = pixelmatch(baseline_io.getvalue(), current_io.getvalue())
+    _, diff_count, _, _ = diff(baseline_io.getvalue(), current_io.getvalue())
 
     assert diff_count == (width * height) // 2
 
@@ -314,7 +337,7 @@ def test_different_sizes_pads_to_larger() -> None:
     baseline = solid_png(10, 8, (200, 0, 0, 255))
     current = solid_png(12, 10, (200, 0, 0, 255))
 
-    _, diff_count, width, height = pixelmatch(baseline, current)
+    _, diff_count, width, height = diff(baseline, current)
 
     assert (width, height) == (12, 10)
     assert diff_count == 40
@@ -324,8 +347,8 @@ def test_threshold_controls_sensitivity() -> None:
     baseline = solid_png(16, 16, (120, 120, 120, 255))
     current = solid_png(16, 16, (132, 132, 132, 255))
 
-    _, low_count, _, _ = pixelmatch(baseline, current, threshold=0.01)
-    _, high_count, _, _ = pixelmatch(baseline, current, threshold=0.3)
+    _, low_count, _, _ = diff(baseline, current, threshold=0.01)
+    _, high_count, _, _ = diff(baseline, current, threshold=0.3)
 
     assert low_count > high_count
     assert high_count == 0
@@ -335,7 +358,7 @@ def test_diff_image_is_valid_png() -> None:
     baseline = solid_png(8, 8, (0, 255, 0, 255))
     current = solid_png(8, 8, (255, 0, 0, 255))
 
-    diff_png, _, _, _ = pixelmatch(baseline, current)
+    diff_png, _, _, _ = diff(baseline, current)
 
     with Image.open(io.BytesIO(diff_png)) as img:
         assert img.format == "PNG"
@@ -346,7 +369,7 @@ def test_identical_images_score_one() -> None:
     baseline = solid_png(48, 48, (120, 130, 140, 255))
     current = baseline
 
-    score = compute_ssim(baseline, current)
+    score = ssim(baseline, current)
     assert score == pytest.approx(1.0, abs=1e-12)
 
 
@@ -354,7 +377,7 @@ def test_completely_different_images_low_score() -> None:
     baseline = solid_png(48, 48, (0, 0, 0, 255))
     current = solid_png(48, 48, (255, 255, 255, 255))
 
-    score = compute_ssim(baseline, current)
+    score = ssim(baseline, current)
     assert score < 0.1
 
 
@@ -369,7 +392,7 @@ def test_slight_difference_high_score() -> None:
     img1.save(out1, format="PNG")
     img2.save(out2, format="PNG")
 
-    score = compute_ssim(out1.getvalue(), out2.getvalue())
+    score = ssim(out1.getvalue(), out2.getvalue())
     assert score > 0.98
 
 
@@ -377,7 +400,7 @@ def test_small_images_below_window_size() -> None:
     baseline = solid_png(5, 5, (100, 100, 100, 255))
     current = solid_png(5, 5, (130, 130, 130, 255))
 
-    score = compute_ssim(baseline, current)
+    score = ssim(baseline, current)
 
     assert 0.0 <= score <= 1.0
     assert score < 1.0
@@ -387,7 +410,7 @@ def test_different_sizes_pads_to_larger_ssim() -> None:
     baseline = solid_png(9, 9, (255, 255, 255, 255))
     current = solid_png(14, 14, (255, 255, 255, 255))
 
-    score = compute_ssim(baseline, current)
+    score = ssim(baseline, current)
 
     assert 0.0 <= score <= 1.0
     assert score < 1.0
@@ -410,8 +433,8 @@ def test_tall_page_change_caught_by_ssim() -> None:
     baseline = baseline_io.getvalue()
     current = current_io.getvalue()
 
-    _, diff_count, _, _ = pixelmatch(baseline, current)
-    score = compute_ssim(baseline, current)
+    _, diff_count, _, _ = diff(baseline, current)
+    score = ssim(baseline, current)
 
     diff_ratio = diff_count / (width * height)
     assert diff_ratio < 0.005
@@ -435,8 +458,8 @@ def test_new_element_below_pixelmatch_threshold() -> None:
     baseline = baseline_io.getvalue()
     current = current_io.getvalue()
 
-    _, diff_count, _, _ = pixelmatch(baseline, current)
-    score = compute_ssim(baseline, current)
+    _, diff_count, _, _ = diff(baseline, current)
+    score = ssim(baseline, current)
 
     diff_ratio = diff_count / (width * height)
     assert diff_ratio < 0.001
@@ -485,13 +508,13 @@ def test_cross_validation_against_python_reference() -> None:
     baseline = baseline_io.getvalue()
     current = current_io.getvalue()
 
-    _, rust_diff_count, rust_w, rust_h = pixelmatch(baseline, current)
+    _, rust_diff_count, rust_w, rust_h = diff(baseline, current)
     ref_diff_count, ref_w, ref_h = pixelmatch_reference_png(baseline, current)
 
     assert (rust_w, rust_h) == (ref_w, ref_h)
     assert rust_diff_count == ref_diff_count
 
-    rust_ssim = compute_ssim(baseline, current)
+    rust_ssim = ssim(baseline, current)
     ref_ssim = ssim_reference_png(baseline, current)
 
     assert abs(rust_ssim - ref_ssim) <= 0.01
@@ -501,13 +524,125 @@ def test_invalid_inputs_raise_value_error() -> None:
     valid = solid_png(2, 2, (10, 20, 30, 255))
 
     with pytest.raises(ValueError):
-        pixelmatch(valid, valid, threshold=-0.01)
+        diff(valid, valid, threshold=-0.01)
 
     with pytest.raises(ValueError):
-        pixelmatch(valid, valid, alpha=1.2)
+        diff(valid, valid, alpha=1.2)
 
     with pytest.raises(ValueError):
-        pixelmatch(b"not-a-png", valid)
+        diff(b"not-a-png", valid)
 
     with pytest.raises(ValueError):
-        compute_ssim(valid, b"not-a-png")
+        ssim(valid, b"not-a-png")
+
+
+def test_diff_count_matches_diff_output() -> None:
+    baseline = solid_png(18, 12, (40, 80, 120, 255))
+    current = solid_png(18, 12, (60, 80, 120, 255))
+
+    _, diff_pixels, width, height = diff(baseline, current, threshold=0.05)
+    count_only, count_w, count_h = diff_count(baseline, current, threshold=0.05)
+
+    assert (width, height) == (count_w, count_h)
+    assert diff_pixels == count_only
+
+
+def test_compare_return_diff_flag_behavior() -> None:
+    baseline = solid_png(15, 9, (5, 10, 15, 255))
+    current = solid_png(15, 9, (255, 10, 15, 255))
+
+    diff_pixels, score, width, height, maybe_diff = compare(
+        baseline, current, return_diff=False
+    )
+    assert maybe_diff is None
+    assert (width, height) == (15, 9)
+    assert diff_pixels > 0
+    assert 0.0 <= score <= 1.0
+
+    diff_pixels_with_img, score_with_img, _, _, diff_png = compare(
+        baseline, current, return_diff=True
+    )
+    assert diff_png is not None
+    assert diff_pixels_with_img == diff_pixels
+    assert score_with_img == pytest.approx(score, rel=0.0, abs=1e-12)
+    with Image.open(io.BytesIO(diff_png)) as img:
+        assert img.size == (15, 9)
+
+
+def test_rgba_entry_points_match_png_entry_points() -> None:
+    baseline = solid_png(11, 7, (200, 50, 20, 255))
+    current = solid_png(11, 7, (180, 50, 20, 255))
+
+    png_diff_bytes, png_diff_count, png_width, png_height = diff(baseline, current)
+    png_ssim = ssim(baseline, current)
+
+    baseline_raw, bw, bh = decode_png_rgba(baseline)
+    current_raw, cw, ch = decode_png_rgba(current)
+
+    rgba_diff_raw, rgba_diff_count, rgba_w, rgba_h = diff_rgba(
+        baseline_raw, bw, bh, current_raw, cw, ch
+    )
+    rgba_ssim = ssim_rgba(baseline_raw, bw, bh, current_raw, cw, ch)
+    rgba_count_only, count_w, count_h = diff_count_rgba(
+        baseline_raw, bw, bh, current_raw, cw, ch
+    )
+
+    assert (rgba_w, rgba_h) == (png_width, png_height)
+    assert (count_w, count_h) == (png_width, png_height)
+    assert rgba_diff_count == png_diff_count == rgba_count_only
+    assert rgba_ssim == pytest.approx(png_ssim, rel=0.0, abs=1e-12)
+
+    png_diff_raw, png_diff_w, png_diff_h = decode_png_rgba(png_diff_bytes)
+    assert (png_diff_w, png_diff_h) == (rgba_w, rgba_h)
+    assert png_diff_raw == rgba_diff_raw
+
+    diff_pixels, score, cmp_w, cmp_h, cmp_rgba = compare_rgba(
+        baseline_raw,
+        bw,
+        bh,
+        current_raw,
+        cw,
+        ch,
+        return_diff=True,
+    )
+    assert (cmp_w, cmp_h) == (png_width, png_height)
+    assert diff_pixels == png_diff_count
+    assert score == pytest.approx(png_ssim, rel=0.0, abs=1e-12)
+    assert cmp_rgba == rgba_diff_raw
+
+
+def test_batch_apis_return_expected_shapes() -> None:
+    pair1 = (
+        solid_png(8, 8, (0, 0, 0, 255)),
+        solid_png(8, 8, (255, 255, 255, 255)),
+    )
+    pair2 = (
+        solid_png(8, 8, (100, 100, 100, 255)),
+        solid_png(8, 8, (100, 100, 100, 255)),
+    )
+    pairs = [pair1, pair2]
+
+    diff_results = diff_batch(pairs)
+    diff_count_results = diff_count_batch(pairs)
+    ssim_results = ssim_batch(pairs)
+    compare_results = compare_batch(pairs, return_diff=True)
+
+    assert len(diff_results) == len(pairs)
+    assert len(diff_count_results) == len(pairs)
+    assert len(ssim_results) == len(pairs)
+    assert len(compare_results) == len(pairs)
+
+    for idx, (
+        (diff_png, diff_pixels, width, height),
+        (count_pixels, count_w, count_h),
+    ) in enumerate(zip(diff_results, diff_count_results)):
+        assert (width, height) == (count_w, count_h) == (8, 8)
+        assert diff_pixels == count_pixels
+        with Image.open(io.BytesIO(diff_png)) as img:
+            assert img.size == (8, 8)
+
+        cmp_pixels, cmp_ssim, cmp_w, cmp_h, cmp_diff_png = compare_results[idx]
+        assert (cmp_w, cmp_h) == (8, 8)
+        assert cmp_pixels == diff_pixels
+        assert cmp_ssim == pytest.approx(ssim_results[idx], rel=0.0, abs=1e-12)
+        assert cmp_diff_png == diff_png
