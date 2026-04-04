@@ -10,6 +10,7 @@ readme = "../../README.md"
 keywords = ["pixelmatch", "ssim", "image-diff", "png", "image-comparison"]
 categories = ["algorithms", "multimedia::images"]
 authors = ["PostHog"]
+exclude = ["tests/", "benches/", "examples/"]
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }

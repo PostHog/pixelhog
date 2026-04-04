@@ -2,8 +2,10 @@ use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ColorType, ImageEncoder, ImageFormat};
 use std::borrow::Cow;
 
+/// `(rgba_bytes, width, height)`
 pub type DecodedPng = (Vec<u8>, usize, usize);
 
+/// Decode a PNG image into raw RGBA bytes.
 pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedPng, String> {
     let dynamic = image::load_from_memory_with_format(bytes, ImageFormat::Png)
         .map_err(|err| format!("failed to decode PNG: {err}"))?;
@@ -18,6 +20,7 @@ pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedPng, String> {
     Ok((raw, width, height))
 }
 
+/// Encode raw RGBA bytes into a PNG image.
 pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
     validate_rgba_len(rgba.len(), width, height)?;
 
@@ -34,6 +37,9 @@ pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u
     Ok(out)
 }
 
+/// Pad two RGBA images to matching dimensions using transparent pixels.
+///
+/// Returns borrowed slices when no padding is needed (zero-copy).
 #[allow(clippy::type_complexity)]
 pub fn pad_images_to_largest_cow<'a>(
     img1: &'a [u8],
@@ -68,6 +74,7 @@ pub fn pad_images_to_largest_cow<'a>(
     Ok((padded1, padded2, width, height))
 }
 
+/// Convert RGBA bytes to grayscale using BT.601 luminance weights.
 pub fn rgba_to_grayscale_f64(rgba: &[u8]) -> Vec<f64> {
     let mut out = Vec::with_capacity(rgba.len() / 4);
     for px in rgba.chunks_exact(4) {
@@ -111,6 +118,7 @@ fn pad_rgba_to_size(
     Ok(padded)
 }
 
+/// Validate that an RGBA buffer has the expected length for the given dimensions.
 pub fn validate_rgba_len(len: usize, width: usize, height: usize) -> Result<(), String> {
     let expected = checked_len(width, height)?;
     if len != expected {

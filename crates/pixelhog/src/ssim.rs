@@ -4,6 +4,10 @@ const C1: f64 = 6.5025;
 const C2: f64 = 58.5225;
 const WIN_SIZE: usize = 11;
 
+/// Compute SSIM on equal-sized RGBA buffers.
+///
+/// Converts to grayscale internally. Falls back to global SSIM
+/// when either dimension is smaller than the 11×11 window.
 pub fn compute_ssim_rgba(
     baseline: &[u8],
     current: &[u8],
@@ -25,6 +29,7 @@ pub fn compute_ssim_rgba(
     compute_ssim_grayscale(&gray1, &gray2, width, height)
 }
 
+/// Compute SSIM on equal-sized grayscale buffers (one `f64` per pixel).
 pub fn compute_ssim_grayscale(
     baseline: &[f64],
     current: &[f64],

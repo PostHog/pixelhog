@@ -7,13 +7,20 @@ const MAX_YIQ_DELTA: f64 = 35215.0;
 const PARALLEL_MIN_PIXELS: usize = 262_144;
 const PARALLEL_ROW_BLOCK: usize = 64;
 
+/// Configuration for pixel-level image comparison.
 #[derive(Debug, Clone)]
 pub struct PixelmatchOptions {
+    /// Color distance threshold in `[0.0, 1.0]`. Lower values catch subtler differences.
     pub threshold: f64,
+    /// Blending factor for unchanged pixels in the diff image (`[0.0, 1.0]`).
     pub alpha: f64,
+    /// When false (default), anti-aliased pixels are excluded from the diff count.
     pub include_aa: bool,
+    /// RGB color used to mark differing pixels (default: red).
     pub diff_color: [u8; 3],
+    /// RGB color used to mark anti-aliased pixels (default: yellow).
     pub aa_color: [u8; 3],
+    /// Optional alternate diff color for pixels where image2 is darker than image1.
     pub diff_color_alt: Option<[u8; 3]>,
 }
 
@@ -30,21 +37,31 @@ impl Default for PixelmatchOptions {
     }
 }
 
+/// Result of a pixel diff that includes the diff image.
 #[derive(Debug, Clone)]
 pub struct PixelmatchOutput {
+    /// Raw RGBA bytes of the diff visualization.
     pub diff_rgba: Vec<u8>,
+    /// Number of pixels that differ beyond the threshold.
     pub diff_count: usize,
     pub width: usize,
     pub height: usize,
 }
 
+/// Result of a count-only pixel diff (no diff image produced).
 #[derive(Debug, Clone, Copy)]
 pub struct PixelmatchCountOutput {
+    /// Number of pixels that differ beyond the threshold.
     pub diff_count: usize,
     pub width: usize,
     pub height: usize,
 }
 
+/// Core pixel diff on equal-sized RGBA buffers, producing a diff image.
+///
+/// Both buffers must have length `width * height * 4`. Use the higher-level
+/// [`diff_rgba`](crate::diff_rgba) or [`diff_png`](crate::diff_png) functions
+/// for automatic padding and PNG decoding.
 pub fn pixelmatch_rgba(
     img1: &[u8],
     img2: &[u8],
@@ -157,6 +174,7 @@ pub fn pixelmatch_rgba(
     })
 }
 
+/// Core count-only pixel diff on equal-sized RGBA buffers (no diff image).
 pub fn pixelmatch_count_rgba(
     img1: &[u8],
     img2: &[u8],

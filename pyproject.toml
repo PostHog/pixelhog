@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Rust-accelerated pixelmatch and SSIM for PNG bytes"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">3.11"
+requires-python = ">=3.12"
 authors = [{ name = "PostHog" }]
 classifiers = [
   "Development Status :: 5 - Production/Stable",

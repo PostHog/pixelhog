@@ -1,3 +1,12 @@
+//! Fast pixelmatch and SSIM image comparison.
+//!
+//! Compares images in two complementary ways:
+//! - **Pixel diff** — exact pixel-level differences with anti-alias detection.
+//! - **SSIM** — perceptual similarity score in `[0.0, 1.0]`.
+//!
+//! High-level functions accept PNG bytes and decode internally. When images
+//! differ in size, the smaller one is padded with transparent pixels.
+
 pub mod image_utils;
 pub mod pixelmatch;
 pub mod ssim;
@@ -9,10 +18,15 @@ use ssim::compute_ssim_rgba;
 
 pub use pixelmatch::{PixelmatchCountOutput, PixelmatchOptions, PixelmatchOutput};
 
+/// `(diff_png_bytes, diff_count, width, height)`
 pub type DiffPngOutput = (Vec<u8>, usize, usize, usize);
+/// `(diff_rgba_bytes, diff_count, width, height)`
 pub type DiffRgbaOutput = (Vec<u8>, usize, usize, usize);
+/// `(diff_count, width, height)`
 pub type DiffCountOutput = (usize, usize, usize);
+/// `(optional_diff_png_bytes, diff_count, ssim, width, height)`
 pub type ComparePngOutput = (Option<Vec<u8>>, usize, f64, usize, usize);
+/// `(optional_diff_rgba_bytes, diff_count, ssim, width, height)`
 pub type CompareRgbaOutput = (Option<Vec<u8>>, usize, f64, usize, usize);
 
 type DecodedImage = (Vec<u8>, usize, usize);
@@ -56,6 +70,10 @@ fn compare_rgba_padded(
     Ok((diff_rgba, diff_count, ssim, width, height))
 }
 
+/// Compute a pixel-level diff from two PNG images.
+///
+/// Decodes both PNGs, pads to matching dimensions, and produces a diff
+/// image highlighting mismatched pixels. Returns the diff as PNG bytes.
 pub fn diff_png(
     baseline_png: &[u8],
     current_png: &[u8],
@@ -80,6 +98,7 @@ pub fn diff_png(
     Ok((diff_png, diff_count, width, height))
 }
 
+/// Count mismatched pixels between two PNG images without producing a diff image.
 pub fn diff_count_png(
     baseline_png: &[u8],
     current_png: &[u8],
@@ -101,6 +120,11 @@ pub fn diff_count_png(
     )
 }
 
+/// Compute the SSIM (structural similarity) score between two PNG images.
+///
+/// Returns a value in `[0.0, 1.0]` where 1.0 means identical.
+/// Uses 11×11 uniform windows with reflect padding; falls back to
+/// global SSIM for images smaller than the window size.
 pub fn ssim_png(baseline_png: &[u8], current_png: &[u8]) -> Result<f64, String> {
     let (
         (baseline_rgba, baseline_width, baseline_height),
@@ -117,6 +141,10 @@ pub fn ssim_png(baseline_png: &[u8], current_png: &[u8]) -> Result<f64, String> 
     )
 }
 
+/// Compute both pixel diff count and SSIM from two PNG images in a single call.
+///
+/// When `return_diff` is true, the diff image is also produced (as PNG bytes).
+/// When false, diff image generation is skipped to save encoding time.
 pub fn compare_png(
     baseline_png: &[u8],
     current_png: &[u8],
@@ -147,6 +175,10 @@ pub fn compare_png(
     Ok((diff_png, diff_count, ssim, width, height))
 }
 
+/// Compute a pixel-level diff from pre-decoded RGBA buffers.
+///
+/// Images may differ in size — the smaller one is padded with transparent pixels.
+/// Returns raw RGBA bytes of the diff image.
 pub fn diff_rgba(
     baseline_rgba: &[u8],
     baseline_width: usize,
@@ -176,6 +208,7 @@ pub fn diff_rgba(
     Ok((diff.diff_rgba, diff.diff_count, width, height))
 }
 
+/// Count mismatched pixels from pre-decoded RGBA buffers without producing a diff image.
 pub fn diff_count_rgba(
     baseline_rgba: &[u8],
     baseline_width: usize,
@@ -205,6 +238,7 @@ pub fn diff_count_rgba(
     Ok((diff.diff_count, width, height))
 }
 
+/// Compute SSIM from pre-decoded RGBA buffers.
 pub fn ssim_rgba(
     baseline_rgba: &[u8],
     baseline_width: usize,
@@ -230,6 +264,7 @@ pub fn ssim_rgba(
     )
 }
 
+/// Compute both pixel diff count and SSIM from pre-decoded RGBA buffers.
 #[allow(clippy::too_many_arguments)]
 pub fn compare_rgba(
     baseline_rgba: &[u8],
