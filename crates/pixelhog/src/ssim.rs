@@ -1,4 +1,5 @@
 use crate::image_utils::rgba_to_grayscale_f64;
+use crate::Error;
 
 const C1: f64 = 6.5025;
 const C2: f64 = 58.5225;
@@ -13,14 +14,19 @@ pub fn compute_ssim_rgba(
     current: &[u8],
     width: usize,
     height: usize,
-) -> Result<f64, String> {
+) -> Result<f64, Error> {
     let expected_len = width
         .checked_mul(height)
         .and_then(|v| v.checked_mul(4))
-        .ok_or_else(|| "image dimensions overflowed".to_string())?;
+        .ok_or(Error::Overflow)?;
 
     if baseline.len() != expected_len || current.len() != expected_len {
-        return Err("invalid RGBA inputs for SSIM".to_string());
+        return Err(Error::BufferLength {
+            expected: expected_len,
+            actual: baseline.len(),
+            width,
+            height,
+        });
     }
 
     let gray1 = rgba_to_grayscale_f64(baseline);
@@ -35,13 +41,16 @@ pub fn compute_ssim_grayscale(
     current: &[f64],
     width: usize,
     height: usize,
-) -> Result<f64, String> {
-    let expected_len = width
-        .checked_mul(height)
-        .ok_or_else(|| "image dimensions overflowed".to_string())?;
+) -> Result<f64, Error> {
+    let expected_len = width.checked_mul(height).ok_or(Error::Overflow)?;
 
     if baseline.len() != expected_len || current.len() != expected_len {
-        return Err("invalid grayscale inputs for SSIM".to_string());
+        return Err(Error::BufferLength {
+            expected: expected_len * 4,
+            actual: baseline.len() * 4,
+            width,
+            height,
+        });
     }
 
     if expected_len == 0 {

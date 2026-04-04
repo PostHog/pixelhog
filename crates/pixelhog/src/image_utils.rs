@@ -1,3 +1,4 @@
+use crate::Error;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ColorType, ImageEncoder, ImageFormat};
 use std::borrow::Cow;
@@ -6,13 +7,14 @@ use std::borrow::Cow;
 pub type DecodedPng = (Vec<u8>, usize, usize);
 
 /// Decode a PNG image into raw RGBA bytes.
-pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedPng, String> {
-    let dynamic = image::load_from_memory_with_format(bytes, ImageFormat::Png)
-        .map_err(|err| format!("failed to decode PNG: {err}"))?;
+pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedPng, Error> {
+    let dynamic = image::load_from_memory_with_format(bytes, ImageFormat::Png)?;
     let rgba = dynamic.to_rgba8();
     let (width, height) = rgba.dimensions();
-    let width = usize::try_from(width).map_err(|_| "image width is too large".to_string())?;
-    let height = usize::try_from(height).map_err(|_| "image height is too large".to_string())?;
+    let width =
+        usize::try_from(width).map_err(|_| Error::DimensionTooLarge { dimension: "width" })?;
+    let height =
+        usize::try_from(height).map_err(|_| Error::DimensionTooLarge { dimension: "height" })?;
     let raw = rgba.into_raw();
 
     validate_rgba_len(raw.len(), width, height)?;
@@ -21,18 +23,20 @@ pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedPng, String> {
 }
 
 /// Encode raw RGBA bytes into a PNG image.
-pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
+pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, Error> {
     validate_rgba_len(rgba.len(), width, height)?;
 
-    let width_u32 = u32::try_from(width).map_err(|_| "image width is too large".to_string())?;
-    let height_u32 = u32::try_from(height).map_err(|_| "image height is too large".to_string())?;
+    let width_u32 =
+        u32::try_from(width).map_err(|_| Error::DimensionTooLarge { dimension: "width" })?;
+    let height_u32 =
+        u32::try_from(height).map_err(|_| Error::DimensionTooLarge { dimension: "height" })?;
 
     let mut out = Vec::new();
     let encoder =
         PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter);
     encoder
         .write_image(rgba, width_u32, height_u32, ColorType::Rgba8.into())
-        .map_err(|err| format!("failed to encode PNG: {err}"))?;
+        .map_err(Error::Encode)?;
 
     Ok(out)
 }
@@ -48,7 +52,7 @@ pub fn pad_images_to_largest_cow<'a>(
     img2: &'a [u8],
     width2: usize,
     height2: usize,
-) -> Result<(Cow<'a, [u8]>, Cow<'a, [u8]>, usize, usize), String> {
+) -> Result<(Cow<'a, [u8]>, Cow<'a, [u8]>, usize, usize), Error> {
     validate_rgba_len(img1.len(), width1, height1)?;
     validate_rgba_len(img2.len(), width2, height2)?;
 
@@ -92,9 +96,9 @@ fn pad_rgba_to_size(
     height: usize,
     target_width: usize,
     target_height: usize,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Error> {
     if width > target_width || height > target_height {
-        return Err("source image is larger than target size".to_string());
+        return Err(Error::PadOverflow);
     }
 
     let target_len = checked_len(target_width, target_height)?;
@@ -119,19 +123,22 @@ fn pad_rgba_to_size(
 }
 
 /// Validate that an RGBA buffer has the expected length for the given dimensions.
-pub fn validate_rgba_len(len: usize, width: usize, height: usize) -> Result<(), String> {
+pub fn validate_rgba_len(len: usize, width: usize, height: usize) -> Result<(), Error> {
     let expected = checked_len(width, height)?;
     if len != expected {
-        return Err(format!(
-            "invalid RGBA buffer length: expected {expected} bytes for {width}x{height}, got {len}"
-        ));
+        return Err(Error::BufferLength {
+            expected,
+            actual: len,
+            width,
+            height,
+        });
     }
     Ok(())
 }
 
-fn checked_len(width: usize, height: usize) -> Result<usize, String> {
+fn checked_len(width: usize, height: usize) -> Result<usize, Error> {
     width
         .checked_mul(height)
         .and_then(|v| v.checked_mul(4))
-        .ok_or_else(|| "image dimensions overflowed buffer size".to_string())
+        .ok_or(Error::Overflow)
 }

@@ -9,6 +9,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use rayon::prelude::*;
 
+fn to_py_err(e: ::pixelhog::Error) -> PyErr {
+    PyValueError::new_err(e.to_string())
+}
+
 fn pixelmatch_options(
     threshold: f64,
     alpha: f64,
@@ -85,7 +89,7 @@ fn diff_py(
     )?;
 
     let (diff_png, diff_count, width, height) =
-        diff_png(baseline_png, current_png, &options).map_err(PyValueError::new_err)?;
+        diff_png(baseline_png, current_png, &options).map_err(to_py_err)?;
 
     let diff_bytes = PyBytes::new(py, &diff_png).into();
     Ok((diff_bytes, diff_count, width, height))
@@ -105,13 +109,13 @@ fn diff_count_py(
     include_aa: bool,
 ) -> PyResult<(usize, usize, usize)> {
     let options = pixelmatch_count_options(threshold, include_aa)?;
-    diff_count_png(baseline_png, current_png, &options).map_err(PyValueError::new_err)
+    diff_count_png(baseline_png, current_png, &options).map_err(to_py_err)
 }
 
 #[pyfunction]
 #[pyo3(name = "ssim")]
 fn ssim_py(baseline_png: &[u8], current_png: &[u8]) -> PyResult<f64> {
-    ssim_png(baseline_png, current_png).map_err(PyValueError::new_err)
+    ssim_png(baseline_png, current_png).map_err(to_py_err)
 }
 
 #[pyfunction]
@@ -149,7 +153,7 @@ fn compare_py(
 
     let (diff_png, diff_count, ssim, width, height) =
         compare_png(baseline_png, current_png, &options, return_diff)
-            .map_err(PyValueError::new_err)?;
+            .map_err(to_py_err)?;
 
     let diff_bytes = diff_png.map(|bytes| PyBytes::new(py, &bytes).into());
     Ok((diff_count, ssim, width, height, diff_bytes))
@@ -203,7 +207,7 @@ fn diff_rgba_py(
         current_height,
         &options,
     )
-    .map_err(PyValueError::new_err)?;
+    .map_err(to_py_err)?;
 
     let diff_bytes = PyBytes::new(py, &diff_rgba).into();
     Ok((diff_bytes, diff_count, width, height))
@@ -240,7 +244,7 @@ fn diff_count_rgba_py(
         current_height,
         &options,
     )
-    .map_err(PyValueError::new_err)
+    .map_err(to_py_err)
 }
 
 #[pyfunction]
@@ -261,7 +265,7 @@ fn ssim_rgba_py(
         current_width,
         current_height,
     )
-    .map_err(PyValueError::new_err)
+    .map_err(to_py_err)
 }
 
 #[pyfunction]
@@ -315,7 +319,7 @@ fn compare_rgba_py(
         &options,
         return_diff,
     )
-    .map_err(PyValueError::new_err)?;
+    .map_err(to_py_err)?;
 
     let diff_bytes = diff_rgba.map(|bytes| PyBytes::new(py, &bytes).into());
     Ok((diff_count, ssim, width, height, diff_bytes))
@@ -350,12 +354,12 @@ fn diff_batch_py(
         diff_color_alt,
     )?;
 
-    let results: Result<Vec<_>, String> = pairs
+    let results: Result<Vec<_>, ::pixelhog::Error> = pairs
         .into_par_iter()
         .map(|(baseline_png, current_png)| diff_png(&baseline_png, &current_png, &options))
         .collect();
 
-    let results = results.map_err(PyValueError::new_err)?;
+    let results = results.map_err(to_py_err)?;
 
     Ok(results
         .into_iter()
@@ -383,23 +387,23 @@ fn diff_count_batch_py(
 ) -> PyResult<Vec<(usize, usize, usize)>> {
     let options = pixelmatch_count_options(threshold, include_aa)?;
 
-    let results: Result<Vec<_>, String> = pairs
+    let results: Result<Vec<_>, ::pixelhog::Error> = pairs
         .into_par_iter()
         .map(|(baseline_png, current_png)| diff_count_png(&baseline_png, &current_png, &options))
         .collect();
 
-    results.map_err(PyValueError::new_err)
+    results.map_err(to_py_err)
 }
 
 #[pyfunction]
 #[pyo3(name = "ssim_batch")]
 fn ssim_batch_py(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<Vec<f64>> {
-    let results: Result<Vec<_>, String> = pairs
+    let results: Result<Vec<_>, ::pixelhog::Error> = pairs
         .into_par_iter()
         .map(|(baseline_png, current_png)| ssim_png(&baseline_png, &current_png))
         .collect();
 
-    results.map_err(PyValueError::new_err)
+    results.map_err(to_py_err)
 }
 
 #[pyfunction]
@@ -433,14 +437,14 @@ fn compare_batch_py(
         diff_color_alt,
     )?;
 
-    let results: Result<Vec<_>, String> = pairs
+    let results: Result<Vec<_>, ::pixelhog::Error> = pairs
         .into_par_iter()
         .map(|(baseline_png, current_png)| {
             compare_png(&baseline_png, &current_png, &options, return_diff)
         })
         .collect();
 
-    let results = results.map_err(PyValueError::new_err)?;
+    let results = results.map_err(to_py_err)?;
 
     Ok(results
         .into_iter()

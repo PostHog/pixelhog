@@ -1,4 +1,5 @@
 use crate::image_utils::validate_rgba_len;
+use crate::Error;
 use rayon::prelude::*;
 
 const GOLDEN_RATIO: f64 = 1.618_033_988_749_895;
@@ -68,14 +69,12 @@ pub fn pixelmatch_rgba(
     width: usize,
     height: usize,
     options: &PixelmatchOptions,
-) -> Result<PixelmatchOutput, String> {
+) -> Result<PixelmatchOutput, Error> {
     validate_options(options)?;
     validate_rgba_len(img1.len(), width, height)?;
     validate_rgba_len(img2.len(), width, height)?;
 
-    let len = width
-        .checked_mul(height)
-        .ok_or_else(|| "image dimensions overflowed".to_string())?;
+    let len = width.checked_mul(height).ok_or(Error::Overflow)?;
 
     let mut output = vec![0u8; img1.len()];
     let alpha = options.alpha;
@@ -181,14 +180,12 @@ pub fn pixelmatch_count_rgba(
     width: usize,
     height: usize,
     options: &PixelmatchOptions,
-) -> Result<PixelmatchCountOutput, String> {
+) -> Result<PixelmatchCountOutput, Error> {
     validate_options(options)?;
     validate_rgba_len(img1.len(), width, height)?;
     validate_rgba_len(img2.len(), width, height)?;
 
-    let len = width
-        .checked_mul(height)
-        .ok_or_else(|| "image dimensions overflowed".to_string())?;
+    let len = width.checked_mul(height).ok_or(Error::Overflow)?;
 
     // Fast path: identical images.
     if img1 == img2 {
@@ -343,13 +340,17 @@ impl U32Pixels<'_> {
     }
 }
 
-fn validate_options(options: &PixelmatchOptions) -> Result<(), String> {
+fn validate_options(options: &PixelmatchOptions) -> Result<(), Error> {
     if !(0.0..=1.0).contains(&options.threshold) {
-        return Err("threshold must be in the range [0.0, 1.0]".to_string());
+        return Err(Error::InvalidOption(
+            "threshold must be in the range [0.0, 1.0]",
+        ));
     }
 
     if !(0.0..=1.0).contains(&options.alpha) {
-        return Err("alpha must be in the range [0.0, 1.0]".to_string());
+        return Err(Error::InvalidOption(
+            "alpha must be in the range [0.0, 1.0]",
+        ));
     }
 
     Ok(())

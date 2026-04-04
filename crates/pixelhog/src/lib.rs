@@ -7,6 +7,7 @@
 //! High-level functions accept PNG bytes and decode internally. When images
 //! differ in size, the smaller one is padded with transparent pixels.
 
+mod error;
 pub mod image_utils;
 pub mod pixelmatch;
 pub mod ssim;
@@ -16,6 +17,7 @@ use pixelmatch::{pixelmatch_count_rgba, pixelmatch_rgba};
 use rayon::join;
 use ssim::compute_ssim_rgba;
 
+pub use error::Error;
 pub use pixelmatch::{PixelmatchCountOutput, PixelmatchOptions, PixelmatchOutput};
 
 /// `(diff_png_bytes, diff_count, width, height)`
@@ -34,7 +36,7 @@ type DecodedImage = (Vec<u8>, usize, usize);
 fn decode_png_pair(
     baseline_png: &[u8],
     current_png: &[u8],
-) -> Result<(DecodedImage, DecodedImage), String> {
+) -> Result<(DecodedImage, DecodedImage), Error> {
     let (baseline_decoded, current_decoded) = join(
         || decode_png_rgba(baseline_png),
         || decode_png_rgba(current_png),
@@ -49,16 +51,16 @@ fn compare_rgba_padded(
     height: usize,
     options: &PixelmatchOptions,
     return_diff: bool,
-) -> Result<CompareRgbaOutput, String> {
+) -> Result<CompareRgbaOutput, Error> {
     let (pixel_result, ssim_result) = join(
         || {
             if return_diff {
                 let diff = pixelmatch_rgba(baseline_rgba, current_rgba, width, height, options)?;
-                Ok::<(Option<Vec<u8>>, usize), String>((Some(diff.diff_rgba), diff.diff_count))
+                Ok::<(Option<Vec<u8>>, usize), Error>((Some(diff.diff_rgba), diff.diff_count))
             } else {
                 let diff =
                     pixelmatch_count_rgba(baseline_rgba, current_rgba, width, height, options)?;
-                Ok::<(Option<Vec<u8>>, usize), String>((None, diff.diff_count))
+                Ok::<(Option<Vec<u8>>, usize), Error>((None, diff.diff_count))
             }
         },
         || compute_ssim_rgba(baseline_rgba, current_rgba, width, height),
@@ -78,7 +80,7 @@ pub fn diff_png(
     baseline_png: &[u8],
     current_png: &[u8],
     options: &PixelmatchOptions,
-) -> Result<DiffPngOutput, String> {
+) -> Result<DiffPngOutput, Error> {
     let (
         (baseline_rgba, baseline_width, baseline_height),
         (current_rgba, current_width, current_height),
@@ -103,7 +105,7 @@ pub fn diff_count_png(
     baseline_png: &[u8],
     current_png: &[u8],
     options: &PixelmatchOptions,
-) -> Result<DiffCountOutput, String> {
+) -> Result<DiffCountOutput, Error> {
     let (
         (baseline_rgba, baseline_width, baseline_height),
         (current_rgba, current_width, current_height),
@@ -125,7 +127,7 @@ pub fn diff_count_png(
 /// Returns a value in `[0.0, 1.0]` where 1.0 means identical.
 /// Uses 11×11 uniform windows with reflect padding; falls back to
 /// global SSIM for images smaller than the window size.
-pub fn ssim_png(baseline_png: &[u8], current_png: &[u8]) -> Result<f64, String> {
+pub fn ssim_png(baseline_png: &[u8], current_png: &[u8]) -> Result<f64, Error> {
     let (
         (baseline_rgba, baseline_width, baseline_height),
         (current_rgba, current_width, current_height),
@@ -150,7 +152,7 @@ pub fn compare_png(
     current_png: &[u8],
     options: &PixelmatchOptions,
     return_diff: bool,
-) -> Result<ComparePngOutput, String> {
+) -> Result<ComparePngOutput, Error> {
     let (
         (baseline_rgba, baseline_width, baseline_height),
         (current_rgba, current_width, current_height),
@@ -187,7 +189,7 @@ pub fn diff_rgba(
     current_width: usize,
     current_height: usize,
     options: &PixelmatchOptions,
-) -> Result<DiffRgbaOutput, String> {
+) -> Result<DiffRgbaOutput, Error> {
     let (baseline_padded, current_padded, width, height) = pad_images_to_largest_cow(
         baseline_rgba,
         baseline_width,
@@ -217,7 +219,7 @@ pub fn diff_count_rgba(
     current_width: usize,
     current_height: usize,
     options: &PixelmatchOptions,
-) -> Result<DiffCountOutput, String> {
+) -> Result<DiffCountOutput, Error> {
     let (baseline_padded, current_padded, width, height) = pad_images_to_largest_cow(
         baseline_rgba,
         baseline_width,
@@ -246,7 +248,7 @@ pub fn ssim_rgba(
     current_rgba: &[u8],
     current_width: usize,
     current_height: usize,
-) -> Result<f64, String> {
+) -> Result<f64, Error> {
     let (baseline_padded, current_padded, width, height) = pad_images_to_largest_cow(
         baseline_rgba,
         baseline_width,
@@ -275,7 +277,7 @@ pub fn compare_rgba(
     current_height: usize,
     options: &PixelmatchOptions,
     return_diff: bool,
-) -> Result<CompareRgbaOutput, String> {
+) -> Result<CompareRgbaOutput, Error> {
     let (baseline_padded, current_padded, width, height) = pad_images_to_largest_cow(
         baseline_rgba,
         baseline_width,
