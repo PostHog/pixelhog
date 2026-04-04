@@ -1,0 +1,24 @@
+[package]
+name = "pixelhog"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Fast pixelmatch and SSIM image comparison"
+license = "MIT"
+repository = "https://github.com/PostHog/pixelhog"
+readme = "../../README.md"
+keywords = ["pixelmatch", "ssim", "image-diff", "png", "image-comparison"]
+categories = ["algorithms", "multimedia::images"]
+authors = ["PostHog"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+rayon = "1.11"
+
+[dev-dependencies]
+approx = "0.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "pixel_benches"
+harness = false

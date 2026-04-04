@@ -4,13 +4,14 @@ build-backend = "maturin"
 
 [project]
 name = "pixelhog"
-version = "0.1.0"
+version = "1.0.0"
 description = "Rust-accelerated pixelmatch and SSIM for PNG bytes"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">3.11"
 authors = [{ name = "PostHog" }]
 classifiers = [
+  "Development Status :: 5 - Production/Stable",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -20,6 +21,9 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
 ]
 
+[project.urls]
+Repository = "https://github.com/PostHog/pixelhog"
+
 [project.optional-dependencies]
 test = [
   "pytest>=8.0",
@@ -27,8 +31,10 @@ test = [
 ]
 
 [tool.maturin]
+manifest-path = "crates/pixelhog-python/Cargo.toml"
 features = ["extension-module"]
 module-name = "pixelhog"
+compatibility = "manylinux2014"
 
 [tool.pytest.ini_options]
 pythonpath = ["python"]

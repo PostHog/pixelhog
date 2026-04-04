@@ -1,31 +1,3 @@
-[package]
-name = "pixelhog"
-version = "0.1.0"
-edition = "2021"
-description = "Fast pixelmatch and SSIM for PNG bytes with Python bindings"
-license = "MIT"
-repository = "https://github.com/PostHog/pixelhog"
-readme = "README.md"
-keywords = ["pixelmatch", "ssim", "image-diff", "pyo3", "png"]
-categories = ["algorithms", "multimedia::images", "api-bindings"]
-
-[lib]
-name = "pixelhog"
-crate-type = ["cdylib", "rlib"]
-
-[features]
-default = []
-extension-module = ["pyo3/extension-module"]
-
-[dependencies]
-pyo3 = { version = "0.24", features = ["abi3-py312"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
-rayon = "1.11"
-
-[dev-dependencies]
-approx = "0.5"
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "pixel_benches"
-harness = false
+[workspace]
+members = ["crates/pixelhog", "crates/pixelhog-python"]
+resolver = "2"

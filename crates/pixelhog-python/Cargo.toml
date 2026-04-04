@@ -1,0 +1,18 @@
+[package]
+name = "pixelhog-python"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "pixelhog"
+crate-type = ["cdylib"]
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+pixelhog = { path = "../pixelhog" }
+pyo3 = { version = "0.24", features = ["abi3-py312"] }
+rayon = "1.11"

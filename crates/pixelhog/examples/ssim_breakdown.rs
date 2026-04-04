@@ -1,19 +1,11 @@
 use std::time::Instant;
 
-#[path = "../src/image_utils.rs"]
-mod image_utils;
-#[path = "../src/pixelmatch.rs"]
-mod pixelmatch;
-#[path = "../src/ssim.rs"]
-mod ssim;
-
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder};
-use image_utils::{decode_png_rgba, encode_png_rgba, pad_images_to_largest_owned};
-use pixelhog::{diff_png, ssim_png, PixelmatchOptions as ApiPixelmatchOptions};
-use pixelmatch::PixelmatchOptions as CorePixelmatchOptions;
+use pixelhog::image_utils::{decode_png_rgba, pad_images_to_largest_cow};
+use pixelhog::ssim::compute_ssim_rgba;
+use pixelhog::ssim_png;
 use rayon::join;
-use ssim::compute_ssim_rgba;
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut out = Vec::new();
@@ -80,24 +72,16 @@ fn main() {
     let runs = 20usize;
 
     let (baseline_png, current_png) = make_screenshot_pair(width, height);
-    let options = CorePixelmatchOptions::default();
-    let api_options = ApiPixelmatchOptions::default();
 
-    // Warmup
-    for _ in 0..3 {
-        let _ = diff_png(&baseline_png, &current_png, &api_options).unwrap();
-        let _ = ssim_png(&baseline_png, &current_png).unwrap();
-    }
-
-    let mut separate_ms = Vec::with_capacity(runs);
-    let mut combined_ms = Vec::with_capacity(runs);
+    let mut api_ms = Vec::with_capacity(runs);
+    let mut decode_pad_ms = Vec::with_capacity(runs);
+    let mut core_ssim_ms = Vec::with_capacity(runs);
 
     for _ in 0..runs {
         let t0 = Instant::now();
-        let _ = diff_png(&baseline_png, &current_png, &api_options).expect("diff_png");
-        let _ = ssim_png(&baseline_png, &current_png).expect("ssim_png");
+        let _ = ssim_png(&baseline_png, &current_png).expect("api ssim");
         let t1 = Instant::now();
-        separate_ms.push((t1 - t0).as_secs_f64() * 1000.0);
+        api_ms.push((t1 - t0).as_secs_f64() * 1000.0);
 
         let t2 = Instant::now();
         let (left, right) = join(
@@ -107,24 +91,17 @@ fn main() {
         let (baseline_rgba, bw, bh) = left.expect("decode left");
         let (current_rgba, cw, ch) = right.expect("decode right");
         let (baseline_padded, current_padded, w, h) =
-            pad_images_to_largest_owned(baseline_rgba, bw, bh, current_rgba, cw, ch).expect("pad");
-
-        let diff = pixelmatch::pixelmatch_rgba(&baseline_padded, &current_padded, w, h, &options)
-            .expect("core pixelmatch");
-        let _score = compute_ssim_rgba(&baseline_padded, &current_padded, w, h).expect("core ssim");
-        let _diff_png = encode_png_rgba(&diff.diff_rgba, w, h).expect("encode diff");
+            pad_images_to_largest_cow(&baseline_rgba, bw, bh, &current_rgba, cw, ch).expect("pad");
         let t3 = Instant::now();
 
-        combined_ms.push((t3 - t2).as_secs_f64() * 1000.0);
+        let _ = compute_ssim_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h).expect("core ssim");
+        let t4 = Instant::now();
+
+        decode_pad_ms.push((t3 - t2).as_secs_f64() * 1000.0);
+        core_ssim_ms.push((t4 - t3).as_secs_f64() * 1000.0);
     }
 
-    let sep = avg_ms(&separate_ms);
-    let comb = avg_ms(&combined_ms);
-    let saved = sep - comb;
-    let saved_pct = if sep > 0.0 { saved / sep * 100.0 } else { 0.0 };
-
-    println!("separate_calls_avg_ms={sep:.2}");
-    println!("combined_single_decode_avg_ms={comb:.2}");
-    println!("saved_ms={saved:.2}");
-    println!("saved_percent={saved_pct:.2}");
+    println!("ssim_png_api_avg_ms={:.2}", avg_ms(&api_ms));
+    println!("decode_plus_pad_avg_ms={:.2}", avg_ms(&decode_pad_ms));
+    println!("core_ssim_rgba_avg_ms={:.2}", avg_ms(&core_ssim_ms));
 }

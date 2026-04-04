@@ -1,15 +1,12 @@
 use std::time::Instant;
 
-#[path = "../src/image_utils.rs"]
-mod image_utils;
-#[path = "../src/pixelmatch.rs"]
-mod pixelmatch;
-
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder};
-use image_utils::{decode_png_rgba, encode_png_rgba, pad_images_to_largest_owned};
-use pixelhog::{diff_png, PixelmatchOptions as ApiPixelmatchOptions};
-use pixelmatch::{pixelmatch_rgba, PixelmatchOptions};
+use pixelhog::image_utils::{decode_png_rgba, encode_png_rgba, pad_images_to_largest_cow};
+use pixelhog::pixelmatch::PixelmatchOptions as CorePixelmatchOptions;
+use pixelhog::ssim::compute_ssim_rgba;
+use pixelhog::{diff_png, ssim_png, PixelmatchOptions as ApiPixelmatchOptions};
+use rayon::join;
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut out = Vec::new();
@@ -76,44 +73,51 @@ fn main() {
     let runs = 20usize;
 
     let (baseline_png, current_png) = make_screenshot_pair(width, height);
-    let options = PixelmatchOptions::default();
+    let options = CorePixelmatchOptions::default();
     let api_options = ApiPixelmatchOptions::default();
 
-    let mut decode_ms = Vec::with_capacity(runs);
-    let mut core_ms = Vec::with_capacity(runs);
-    let mut encode_ms = Vec::with_capacity(runs);
-    let mut full_ms = Vec::with_capacity(runs);
-    let mut api_ms = Vec::with_capacity(runs);
+    // Warmup
+    for _ in 0..3 {
+        let _ = diff_png(&baseline_png, &current_png, &api_options).unwrap();
+        let _ = ssim_png(&baseline_png, &current_png).unwrap();
+    }
+
+    let mut separate_ms = Vec::with_capacity(runs);
+    let mut combined_ms = Vec::with_capacity(runs);
 
     for _ in 0..runs {
         let t0 = Instant::now();
-        let (baseline_rgba, bw, bh) = decode_png_rgba(&baseline_png).expect("decode baseline");
-        let (current_rgba, cw, ch) = decode_png_rgba(&current_png).expect("decode current");
-        let (baseline_padded, current_padded, w, h) =
-            pad_images_to_largest_owned(baseline_rgba, bw, bh, current_rgba, cw, ch)
-                .expect("pad images");
+        let _ = diff_png(&baseline_png, &current_png, &api_options).expect("diff_png");
+        let _ = ssim_png(&baseline_png, &current_png).expect("ssim_png");
         let t1 = Instant::now();
+        separate_ms.push((t1 - t0).as_secs_f64() * 1000.0);
 
-        let out = pixelmatch_rgba(&baseline_padded, &current_padded, w, h, &options)
-            .expect("pixelmatch core");
         let t2 = Instant::now();
+        let (left, right) = join(
+            || decode_png_rgba(&baseline_png),
+            || decode_png_rgba(&current_png),
+        );
+        let (baseline_rgba, bw, bh) = left.expect("decode left");
+        let (current_rgba, cw, ch) = right.expect("decode right");
+        let (baseline_padded, current_padded, w, h) =
+            pad_images_to_largest_cow(&baseline_rgba, bw, bh, &current_rgba, cw, ch).expect("pad");
 
-        let _diff_png = encode_png_rgba(&out.diff_rgba, w, h).expect("encode diff png");
+        let diff = pixelhog::pixelmatch::pixelmatch_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h, &options)
+            .expect("core pixelmatch");
+        let _score = compute_ssim_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h).expect("core ssim");
+        let _diff_png = encode_png_rgba(&diff.diff_rgba, w, h).expect("encode diff");
         let t3 = Instant::now();
 
-        let _api = diff_png(&baseline_png, &current_png, &api_options).expect("api pixelmatch");
-        let t4 = Instant::now();
-
-        decode_ms.push((t1 - t0).as_secs_f64() * 1000.0);
-        core_ms.push((t2 - t1).as_secs_f64() * 1000.0);
-        encode_ms.push((t3 - t2).as_secs_f64() * 1000.0);
-        full_ms.push((t3 - t0).as_secs_f64() * 1000.0);
-        api_ms.push((t4 - t3).as_secs_f64() * 1000.0);
+        combined_ms.push((t3 - t2).as_secs_f64() * 1000.0);
     }
 
-    println!("decode_avg_ms={:.2}", avg_ms(&decode_ms));
-    println!("core_pixelmatch_avg_ms={:.2}", avg_ms(&core_ms));
-    println!("encode_avg_ms={:.2}", avg_ms(&encode_ms));
-    println!("full_pipeline_avg_ms={:.2}", avg_ms(&full_ms));
-    println!("diff_png_api_avg_ms={:.2}", avg_ms(&api_ms));
+    let sep = avg_ms(&separate_ms);
+    let comb = avg_ms(&combined_ms);
+    let saved = sep - comb;
+    let saved_pct = if sep > 0.0 { saved / sep * 100.0 } else { 0.0 };
+
+    println!("separate_calls_avg_ms={sep:.2}");
+    println!("combined_single_decode_avg_ms={comb:.2}");
+    println!("saved_ms={saved:.2}");
+    println!("saved_percent={saved_pct:.2}");
 }

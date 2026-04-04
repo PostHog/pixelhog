@@ -215,6 +215,7 @@ pub fn pixelmatch_count_rgba(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_row(
     y: usize,
     row_out: &mut [u8],
@@ -271,6 +272,7 @@ fn process_row(
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn process_row_count(
     y: usize,
     img1: &[u8],
@@ -547,11 +549,15 @@ mod tests {
         let img1 = rgba_from_luma(&[[100, 100, 200], [100, 128, 200], [100, 200, 200]]);
         let img2 = rgba_from_luma(&[[100, 100, 200], [100, 160, 200], [100, 200, 200]]);
 
-        let mut include_aa = PixelmatchOptions::default();
-        include_aa.include_aa = true;
+        let include_aa = PixelmatchOptions {
+            include_aa: true,
+            ..PixelmatchOptions::default()
+        };
 
-        let mut exclude_aa = include_aa.clone();
-        exclude_aa.include_aa = false;
+        let exclude_aa = PixelmatchOptions {
+            include_aa: false,
+            ..PixelmatchOptions::default()
+        };
 
         let with_aa = pixelmatch_rgba(&img1, &img2, 3, 3, &include_aa).unwrap();
         let without_aa = pixelmatch_rgba(&img1, &img2, 3, 3, &exclude_aa).unwrap();

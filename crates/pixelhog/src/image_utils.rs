@@ -34,40 +34,7 @@ pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u
     Ok(out)
 }
 
-#[allow(dead_code)]
-pub fn pad_images_to_largest_owned(
-    img1: Vec<u8>,
-    width1: usize,
-    height1: usize,
-    img2: Vec<u8>,
-    width2: usize,
-    height2: usize,
-) -> Result<(Vec<u8>, Vec<u8>, usize, usize), String> {
-    validate_rgba_len(img1.len(), width1, height1)?;
-    validate_rgba_len(img2.len(), width2, height2)?;
-
-    let width = width1.max(width2);
-    let height = height1.max(height2);
-
-    if width == width1 && height == height1 && width == width2 && height == height2 {
-        return Ok((img1, img2, width, height));
-    }
-
-    let padded1 = if width == width1 && height == height1 {
-        img1
-    } else {
-        pad_rgba_to_size(&img1, width1, height1, width, height)?
-    };
-
-    let padded2 = if width == width2 && height == height2 {
-        img2
-    } else {
-        pad_rgba_to_size(&img2, width2, height2, width, height)?
-    };
-
-    Ok((padded1, padded2, width, height))
-}
-
+#[allow(clippy::type_complexity)]
 pub fn pad_images_to_largest_cow<'a>(
     img1: &'a [u8],
     width1: usize,
