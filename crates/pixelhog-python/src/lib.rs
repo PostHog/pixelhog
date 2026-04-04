@@ -453,6 +453,8 @@ fn compare_batch_py(
 
 #[pymodule]
 fn pixelhog(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
     m.add_function(wrap_pyfunction!(diff_py, m)?)?;
     m.add_function(wrap_pyfunction!(diff_count_py, m)?)?;
     m.add_function(wrap_pyfunction!(ssim_py, m)?)?;

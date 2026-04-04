@@ -113,6 +113,8 @@ def compare_batch(
     return_diff: bool = False,
 ) -> list[CompareResult]: ...
 
+__version__: str
+
 __all__ = [
     "diff",
     "diff_count",
