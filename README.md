@@ -86,6 +86,10 @@ The test suite is designed to validate both algorithm fidelity and practical pro
 Run the full correctness suite:
 
 ```bash
+# Rust core only
+cargo test -p pixelhog
+
+# Full suite including Python integration tests
 cargo test
 uv run --python 3.12 --with maturin --with pytest --with pillow bash -lc \
   "maturin develop --release && pytest -q"

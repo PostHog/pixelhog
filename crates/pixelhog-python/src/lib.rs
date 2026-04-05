@@ -89,7 +89,8 @@ fn diff_py(
     )?;
 
     let (diff_png, diff_count, width, height) =
-        diff_png(baseline_png, current_png, &options).map_err(to_py_err)?;
+        py.allow_threads(|| diff_png(baseline_png, current_png, &options))
+            .map_err(to_py_err)?;
 
     let diff_bytes = PyBytes::new(py, &diff_png).into();
     Ok((diff_bytes, diff_count, width, height))
@@ -103,19 +104,22 @@ fn diff_py(
     include_aa = false,
 ))]
 fn diff_count_py(
+    py: Python<'_>,
     baseline_png: &[u8],
     current_png: &[u8],
     threshold: f64,
     include_aa: bool,
 ) -> PyResult<(usize, usize, usize)> {
     let options = pixelmatch_count_options(threshold, include_aa)?;
-    diff_count_png(baseline_png, current_png, &options).map_err(to_py_err)
+    py.allow_threads(|| diff_count_png(baseline_png, current_png, &options))
+        .map_err(to_py_err)
 }
 
 #[pyfunction]
 #[pyo3(name = "ssim")]
-fn ssim_py(baseline_png: &[u8], current_png: &[u8]) -> PyResult<f64> {
-    ssim_png(baseline_png, current_png).map_err(to_py_err)
+fn ssim_py(py: Python<'_>, baseline_png: &[u8], current_png: &[u8]) -> PyResult<f64> {
+    py.allow_threads(|| ssim_png(baseline_png, current_png))
+        .map_err(to_py_err)
 }
 
 #[pyfunction]
@@ -152,7 +156,7 @@ fn compare_py(
     )?;
 
     let (diff_png, diff_count, ssim, width, height) =
-        compare_png(baseline_png, current_png, &options, return_diff)
+        py.allow_threads(|| compare_png(baseline_png, current_png, &options, return_diff))
             .map_err(to_py_err)?;
 
     let diff_bytes = diff_png.map(|bytes| PyBytes::new(py, &bytes).into());
@@ -198,16 +202,19 @@ fn diff_rgba_py(
         diff_color_alt,
     )?;
 
-    let (diff_rgba, diff_count, width, height) = diff_rgba(
-        baseline_rgba,
-        baseline_width,
-        baseline_height,
-        current_rgba,
-        current_width,
-        current_height,
-        &options,
-    )
-    .map_err(to_py_err)?;
+    let (diff_rgba, diff_count, width, height) = py
+        .allow_threads(|| {
+            diff_rgba(
+                baseline_rgba,
+                baseline_width,
+                baseline_height,
+                current_rgba,
+                current_width,
+                current_height,
+                &options,
+            )
+        })
+        .map_err(to_py_err)?;
 
     let diff_bytes = PyBytes::new(py, &diff_rgba).into();
     Ok((diff_bytes, diff_count, width, height))
@@ -225,6 +232,7 @@ fn diff_rgba_py(
     include_aa = false,
 ))]
 fn diff_count_rgba_py(
+    py: Python<'_>,
     baseline_rgba: &[u8],
     baseline_width: usize,
     baseline_height: usize,
@@ -235,21 +243,24 @@ fn diff_count_rgba_py(
     include_aa: bool,
 ) -> PyResult<(usize, usize, usize)> {
     let options = pixelmatch_count_options(threshold, include_aa)?;
-    diff_count_rgba(
-        baseline_rgba,
-        baseline_width,
-        baseline_height,
-        current_rgba,
-        current_width,
-        current_height,
-        &options,
-    )
+    py.allow_threads(|| {
+        diff_count_rgba(
+            baseline_rgba,
+            baseline_width,
+            baseline_height,
+            current_rgba,
+            current_width,
+            current_height,
+            &options,
+        )
+    })
     .map_err(to_py_err)
 }
 
 #[pyfunction]
 #[pyo3(name = "ssim_rgba")]
 fn ssim_rgba_py(
+    py: Python<'_>,
     baseline_rgba: &[u8],
     baseline_width: usize,
     baseline_height: usize,
@@ -257,14 +268,16 @@ fn ssim_rgba_py(
     current_width: usize,
     current_height: usize,
 ) -> PyResult<f64> {
-    ssim_rgba(
-        baseline_rgba,
-        baseline_width,
-        baseline_height,
-        current_rgba,
-        current_width,
-        current_height,
-    )
+    py.allow_threads(|| {
+        ssim_rgba(
+            baseline_rgba,
+            baseline_width,
+            baseline_height,
+            current_rgba,
+            current_width,
+            current_height,
+        )
+    })
     .map_err(to_py_err)
 }
 
@@ -309,17 +322,20 @@ fn compare_rgba_py(
         diff_color_alt,
     )?;
 
-    let (diff_rgba, diff_count, ssim, width, height) = compare_rgba(
-        baseline_rgba,
-        baseline_width,
-        baseline_height,
-        current_rgba,
-        current_width,
-        current_height,
-        &options,
-        return_diff,
-    )
-    .map_err(to_py_err)?;
+    let (diff_rgba, diff_count, ssim, width, height) = py
+        .allow_threads(|| {
+            compare_rgba(
+                baseline_rgba,
+                baseline_width,
+                baseline_height,
+                current_rgba,
+                current_width,
+                current_height,
+                &options,
+                return_diff,
+            )
+        })
+        .map_err(to_py_err)?;
 
     let diff_bytes = diff_rgba.map(|bytes| PyBytes::new(py, &bytes).into());
     Ok((diff_count, ssim, width, height, diff_bytes))
@@ -354,12 +370,13 @@ fn diff_batch_py(
         diff_color_alt,
     )?;
 
-    let results: Result<Vec<_>, ::pixelhog::Error> = pairs
-        .into_par_iter()
-        .map(|(baseline_png, current_png)| diff_png(&baseline_png, &current_png, &options))
-        .collect();
-
-    let results = results.map_err(to_py_err)?;
+    let results = py.allow_threads(|| {
+        let r: Result<Vec<_>, ::pixelhog::Error> = pairs
+            .into_par_iter()
+            .map(|(baseline_png, current_png)| diff_png(&baseline_png, &current_png, &options))
+            .collect();
+        r
+    }).map_err(to_py_err)?;
 
     Ok(results
         .into_iter()
@@ -381,29 +398,36 @@ fn diff_batch_py(
     include_aa = false,
 ))]
 fn diff_count_batch_py(
+    py: Python<'_>,
     pairs: Vec<(Vec<u8>, Vec<u8>)>,
     threshold: f64,
     include_aa: bool,
 ) -> PyResult<Vec<(usize, usize, usize)>> {
     let options = pixelmatch_count_options(threshold, include_aa)?;
 
-    let results: Result<Vec<_>, ::pixelhog::Error> = pairs
-        .into_par_iter()
-        .map(|(baseline_png, current_png)| diff_count_png(&baseline_png, &current_png, &options))
-        .collect();
-
-    results.map_err(to_py_err)
+    py.allow_threads(|| {
+        let r: Result<Vec<_>, ::pixelhog::Error> = pairs
+            .into_par_iter()
+            .map(|(baseline_png, current_png)| {
+                diff_count_png(&baseline_png, &current_png, &options)
+            })
+            .collect();
+        r
+    })
+    .map_err(to_py_err)
 }
 
 #[pyfunction]
 #[pyo3(name = "ssim_batch")]
-fn ssim_batch_py(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<Vec<f64>> {
-    let results: Result<Vec<_>, ::pixelhog::Error> = pairs
-        .into_par_iter()
-        .map(|(baseline_png, current_png)| ssim_png(&baseline_png, &current_png))
-        .collect();
-
-    results.map_err(to_py_err)
+fn ssim_batch_py(py: Python<'_>, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<Vec<f64>> {
+    py.allow_threads(|| {
+        let r: Result<Vec<_>, ::pixelhog::Error> = pairs
+            .into_par_iter()
+            .map(|(baseline_png, current_png)| ssim_png(&baseline_png, &current_png))
+            .collect();
+        r
+    })
+    .map_err(to_py_err)
 }
 
 #[pyfunction]
@@ -437,14 +461,15 @@ fn compare_batch_py(
         diff_color_alt,
     )?;
 
-    let results: Result<Vec<_>, ::pixelhog::Error> = pairs
-        .into_par_iter()
-        .map(|(baseline_png, current_png)| {
-            compare_png(&baseline_png, &current_png, &options, return_diff)
-        })
-        .collect();
-
-    let results = results.map_err(to_py_err)?;
+    let results = py.allow_threads(|| {
+        let r: Result<Vec<_>, ::pixelhog::Error> = pairs
+            .into_par_iter()
+            .map(|(baseline_png, current_png)| {
+                compare_png(&baseline_png, &current_png, &options, return_diff)
+            })
+            .collect();
+        r
+    }).map_err(to_py_err)?;
 
     Ok(results
         .into_iter()
