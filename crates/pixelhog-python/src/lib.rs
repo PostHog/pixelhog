@@ -88,9 +88,9 @@ fn diff_py(
         diff_color_alt,
     )?;
 
-    let (diff_png, diff_count, width, height) =
-        py.allow_threads(|| diff_png(baseline_png, current_png, &options))
-            .map_err(to_py_err)?;
+    let (diff_png, diff_count, width, height) = py
+        .allow_threads(|| diff_png(baseline_png, current_png, &options))
+        .map_err(to_py_err)?;
 
     let diff_bytes = PyBytes::new(py, &diff_png).into();
     Ok((diff_bytes, diff_count, width, height))
@@ -155,9 +155,9 @@ fn compare_py(
         diff_color_alt,
     )?;
 
-    let (diff_png, diff_count, ssim, width, height) =
-        py.allow_threads(|| compare_png(baseline_png, current_png, &options, return_diff))
-            .map_err(to_py_err)?;
+    let (diff_png, diff_count, ssim, width, height) = py
+        .allow_threads(|| compare_png(baseline_png, current_png, &options, return_diff))
+        .map_err(to_py_err)?;
 
     let diff_bytes = diff_png.map(|bytes| PyBytes::new(py, &bytes).into());
     Ok((diff_count, ssim, width, height, diff_bytes))
@@ -370,13 +370,15 @@ fn diff_batch_py(
         diff_color_alt,
     )?;
 
-    let results = py.allow_threads(|| {
-        let r: Result<Vec<_>, ::pixelhog::Error> = pairs
-            .into_par_iter()
-            .map(|(baseline_png, current_png)| diff_png(&baseline_png, &current_png, &options))
-            .collect();
-        r
-    }).map_err(to_py_err)?;
+    let results = py
+        .allow_threads(|| {
+            let r: Result<Vec<_>, ::pixelhog::Error> = pairs
+                .into_par_iter()
+                .map(|(baseline_png, current_png)| diff_png(&baseline_png, &current_png, &options))
+                .collect();
+            r
+        })
+        .map_err(to_py_err)?;
 
     Ok(results
         .into_iter()
@@ -461,15 +463,17 @@ fn compare_batch_py(
         diff_color_alt,
     )?;
 
-    let results = py.allow_threads(|| {
-        let r: Result<Vec<_>, ::pixelhog::Error> = pairs
-            .into_par_iter()
-            .map(|(baseline_png, current_png)| {
-                compare_png(&baseline_png, &current_png, &options, return_diff)
-            })
-            .collect();
-        r
-    }).map_err(to_py_err)?;
+    let results = py
+        .allow_threads(|| {
+            let r: Result<Vec<_>, ::pixelhog::Error> = pairs
+                .into_par_iter()
+                .map(|(baseline_png, current_png)| {
+                    compare_png(&baseline_png, &current_png, &options, return_diff)
+                })
+                .collect();
+            r
+        })
+        .map_err(to_py_err)?;
 
     Ok(results
         .into_iter()

@@ -94,7 +94,8 @@ fn main() {
             pad_images_to_largest_cow(&baseline_rgba, bw, bh, &current_rgba, cw, ch).expect("pad");
         let t3 = Instant::now();
 
-        let _ = compute_ssim_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h).expect("core ssim");
+        let _ = compute_ssim_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h)
+            .expect("core ssim");
         let t4 = Instant::now();
 
         decode_pad_ms.push((t3 - t2).as_secs_f64() * 1000.0);

@@ -102,9 +102,16 @@ fn main() {
         let (baseline_padded, current_padded, w, h) =
             pad_images_to_largest_cow(&baseline_rgba, bw, bh, &current_rgba, cw, ch).expect("pad");
 
-        let diff = pixelhog::pixelmatch::pixelmatch_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h, &options)
-            .expect("core pixelmatch");
-        let _score = compute_ssim_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h).expect("core ssim");
+        let diff = pixelhog::pixelmatch::pixelmatch_rgba(
+            baseline_padded.as_ref(),
+            current_padded.as_ref(),
+            w,
+            h,
+            &options,
+        )
+        .expect("core pixelmatch");
+        let _score = compute_ssim_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h)
+            .expect("core ssim");
         let _diff_png = encode_png_rgba(&diff.diff_rgba, w, h).expect("encode diff");
         let t3 = Instant::now();
 

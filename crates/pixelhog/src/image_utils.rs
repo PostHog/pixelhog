@@ -13,8 +13,9 @@ pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedPng, Error> {
     let (width, height) = rgba.dimensions();
     let width =
         usize::try_from(width).map_err(|_| Error::DimensionTooLarge { dimension: "width" })?;
-    let height =
-        usize::try_from(height).map_err(|_| Error::DimensionTooLarge { dimension: "height" })?;
+    let height = usize::try_from(height).map_err(|_| Error::DimensionTooLarge {
+        dimension: "height",
+    })?;
     let raw = rgba.into_raw();
 
     validate_rgba_len(raw.len(), width, height)?;
@@ -28,8 +29,9 @@ pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u
 
     let width_u32 =
         u32::try_from(width).map_err(|_| Error::DimensionTooLarge { dimension: "width" })?;
-    let height_u32 =
-        u32::try_from(height).map_err(|_| Error::DimensionTooLarge { dimension: "height" })?;
+    let height_u32 = u32::try_from(height).map_err(|_| Error::DimensionTooLarge {
+        dimension: "height",
+    })?;
 
     let mut out = Vec::new();
     let encoder =

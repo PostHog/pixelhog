@@ -10,7 +10,9 @@ pub enum Error {
     Encode(image::ImageError),
 
     /// RGBA buffer length does not match the declared dimensions.
-    #[error("invalid RGBA buffer length: expected {expected} bytes for {width}x{height}, got {actual}")]
+    #[error(
+        "invalid RGBA buffer length: expected {expected} bytes for {width}x{height}, got {actual}"
+    )]
     BufferLength {
         expected: usize,
         actual: usize,

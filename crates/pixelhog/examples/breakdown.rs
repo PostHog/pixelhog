@@ -89,8 +89,14 @@ fn main() {
                 .expect("pad images");
         let t1 = Instant::now();
 
-        let out = pixelmatch_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h, &options)
-            .expect("pixelmatch core");
+        let out = pixelmatch_rgba(
+            baseline_padded.as_ref(),
+            current_padded.as_ref(),
+            w,
+            h,
+            &options,
+        )
+        .expect("pixelmatch core");
         let t2 = Instant::now();
 
         let _diff_png = encode_png_rgba(&out.diff_rgba, w, h).expect("encode diff png");
