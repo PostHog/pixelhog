@@ -1,0 +1,146 @@
+use crate::Error;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{ColorType, ImageEncoder, ImageFormat};
+use std::borrow::Cow;
+
+/// `(rgba_bytes, width, height)`
+pub type DecodedPng = (Vec<u8>, usize, usize);
+
+/// Decode a PNG image into raw RGBA bytes.
+pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedPng, Error> {
+    let dynamic = image::load_from_memory_with_format(bytes, ImageFormat::Png)?;
+    let rgba = dynamic.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let width =
+        usize::try_from(width).map_err(|_| Error::DimensionTooLarge { dimension: "width" })?;
+    let height = usize::try_from(height).map_err(|_| Error::DimensionTooLarge {
+        dimension: "height",
+    })?;
+    let raw = rgba.into_raw();
+
+    validate_rgba_len(raw.len(), width, height)?;
+
+    Ok((raw, width, height))
+}
+
+/// Encode raw RGBA bytes into a PNG image.
+pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, Error> {
+    validate_rgba_len(rgba.len(), width, height)?;
+
+    let width_u32 =
+        u32::try_from(width).map_err(|_| Error::DimensionTooLarge { dimension: "width" })?;
+    let height_u32 = u32::try_from(height).map_err(|_| Error::DimensionTooLarge {
+        dimension: "height",
+    })?;
+
+    let mut out = Vec::new();
+    let encoder =
+        PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter);
+    encoder
+        .write_image(rgba, width_u32, height_u32, ColorType::Rgba8.into())
+        .map_err(Error::Encode)?;
+
+    Ok(out)
+}
+
+/// Pad two RGBA images to matching dimensions using transparent pixels.
+///
+/// Returns borrowed slices when no padding is needed (zero-copy).
+#[allow(clippy::type_complexity)]
+pub fn pad_images_to_largest_cow<'a>(
+    img1: &'a [u8],
+    width1: usize,
+    height1: usize,
+    img2: &'a [u8],
+    width2: usize,
+    height2: usize,
+) -> Result<(Cow<'a, [u8]>, Cow<'a, [u8]>, usize, usize), Error> {
+    validate_rgba_len(img1.len(), width1, height1)?;
+    validate_rgba_len(img2.len(), width2, height2)?;
+
+    let width = width1.max(width2);
+    let height = height1.max(height2);
+
+    if width == width1 && height == height1 && width == width2 && height == height2 {
+        return Ok((Cow::Borrowed(img1), Cow::Borrowed(img2), width, height));
+    }
+
+    let padded1 = if width == width1 && height == height1 {
+        Cow::Borrowed(img1)
+    } else {
+        Cow::Owned(pad_rgba_to_size(img1, width1, height1, width, height)?)
+    };
+
+    let padded2 = if width == width2 && height == height2 {
+        Cow::Borrowed(img2)
+    } else {
+        Cow::Owned(pad_rgba_to_size(img2, width2, height2, width, height)?)
+    };
+
+    Ok((padded1, padded2, width, height))
+}
+
+/// Convert RGBA bytes to grayscale using BT.601 luminance weights.
+pub fn rgba_to_grayscale_f64(rgba: &[u8]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(rgba.len() / 4);
+    for px in rgba.chunks_exact(4) {
+        let r = px[0] as f64;
+        let g = px[1] as f64;
+        let b = px[2] as f64;
+        out.push(r * 0.299 + g * 0.587 + b * 0.114);
+    }
+    out
+}
+
+fn pad_rgba_to_size(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    target_width: usize,
+    target_height: usize,
+) -> Result<Vec<u8>, Error> {
+    if width > target_width || height > target_height {
+        return Err(Error::PadOverflow);
+    }
+
+    let target_len = checked_len(target_width, target_height)?;
+    let mut padded = vec![0u8; target_len];
+
+    if width == 0 || height == 0 {
+        return Ok(padded);
+    }
+
+    let src_stride = width * 4;
+    let dst_stride = target_width * 4;
+
+    for row in 0..height {
+        let src_start = row * src_stride;
+        let src_end = src_start + src_stride;
+        let dst_start = row * dst_stride;
+        let dst_end = dst_start + src_stride;
+        padded[dst_start..dst_end].copy_from_slice(&rgba[src_start..src_end]);
+    }
+
+    Ok(padded)
+}
+
+/// Validate that an RGBA buffer has the expected length for the given dimensions.
+pub fn validate_rgba_len(len: usize, width: usize, height: usize) -> Result<(), Error> {
+    let expected = checked_len(width, height)?;
+    if len != expected {
+        return Err(Error::BufferLength {
+            expected,
+            actual: len,
+            width,
+            height,
+        });
+    }
+    Ok(())
+}
+
+fn checked_len(width: usize, height: usize) -> Result<usize, Error> {
+    width
+        .checked_mul(height)
+        .and_then(|v| v.checked_mul(4))
+        .ok_or(Error::Overflow)
+}

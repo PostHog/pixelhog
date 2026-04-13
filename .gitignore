@@ -1,0 +1,15 @@
+/.claude
+/logs
+/target
+/.venv
+/.pytest_cache
+/dist
+/.maturin
+.DS_Store
+__pycache__
+*.pyc
+*.pyo
+*.so
+*.dylib
+*.dll
+*.pyd
