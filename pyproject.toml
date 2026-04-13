@@ -7,7 +7,7 @@ name = "pixelhog"
 version = "1.0.0"
 description = "Rust-accelerated pixelmatch and SSIM for PNG bytes"
 readme = "README.md"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
 authors = [{ name = "PostHog" }]
 classifiers = [
