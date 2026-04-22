@@ -67,6 +67,11 @@ fn thumbnail_options(
     })
 }
 
+/// Create a lossless WebP thumbnail from a PNG image.
+///
+/// Scales down to `width`, preserving aspect ratio. If `height` is set,
+/// crops from the top after resizing — useful for fixed-size grid cells.
+/// Images already within bounds are re-encoded without resizing.
 #[pyfunction]
 #[pyo3(name = "thumbnail", signature = (png_bytes, width = 200, height = None))]
 fn thumbnail_py(
@@ -81,6 +86,10 @@ fn thumbnail_py(
     Ok(PyBytes::new(py, &result).into())
 }
 
+/// Compute a pixel-level diff between two PNG images.
+///
+/// The diff image highlights mismatched pixels in `diff_color` and
+/// anti-aliased pixels in `aa_color`.
 #[pyfunction]
 #[pyo3(name = "diff", signature = (
     baseline_png,
@@ -120,6 +129,9 @@ fn diff_py(
     Ok((diff_bytes, diff_count, width, height))
 }
 
+/// Count mismatched pixels between two PNG images without producing a diff image.
+///
+/// Faster than `diff()` when you only need the count.
 #[pyfunction]
 #[pyo3(name = "diff_count", signature = (
     baseline_png,
@@ -139,6 +151,9 @@ fn diff_count_py(
         .map_err(to_py_err)
 }
 
+/// Compute SSIM (structural similarity) between two PNG images.
+///
+/// Score in [0.0, 1.0] where 1.0 means identical.
 #[pyfunction]
 #[pyo3(name = "ssim")]
 fn ssim_py(py: Python<'_>, baseline_png: &[u8], current_png: &[u8]) -> PyResult<f64> {
@@ -146,6 +161,10 @@ fn ssim_py(py: Python<'_>, baseline_png: &[u8], current_png: &[u8]) -> PyResult<
         .map_err(to_py_err)
 }
 
+/// Compute pixel diff count and SSIM in a single call (one decode pass).
+///
+/// Set `return_diff=True` to include the diff image. Set `thumbnail_width`
+/// to generate a WebP thumbnail of the current image from the already-decoded buffer.
 #[pyfunction]
 #[pyo3(name = "compare", signature = (
     baseline_png,
@@ -208,6 +227,9 @@ fn compare_py(
     Ok((diff_count, ssim, width, height, diff_bytes, thumb_bytes))
 }
 
+/// Compute a pixel-level diff from pre-decoded RGBA buffers.
+///
+/// Same as `diff()` but accepts raw RGBA bytes instead of PNG.
 #[pyfunction]
 #[pyo3(name = "diff_rgba", signature = (
     baseline_rgba,
@@ -265,6 +287,9 @@ fn diff_rgba_py(
     Ok((diff_bytes, diff_count, width, height))
 }
 
+/// Count mismatched pixels from pre-decoded RGBA buffers.
+///
+/// Same as `diff_count()` but accepts raw RGBA bytes instead of PNG.
 #[pyfunction]
 #[pyo3(name = "diff_count_rgba", signature = (
     baseline_rgba,
@@ -302,6 +327,9 @@ fn diff_count_rgba_py(
     .map_err(to_py_err)
 }
 
+/// Compute SSIM from pre-decoded RGBA buffers.
+///
+/// Same as `ssim()` but accepts raw RGBA bytes instead of PNG.
 #[pyfunction]
 #[pyo3(name = "ssim_rgba")]
 fn ssim_rgba_py(
@@ -326,6 +354,9 @@ fn ssim_rgba_py(
     .map_err(to_py_err)
 }
 
+/// Compute pixel diff count and SSIM from pre-decoded RGBA buffers.
+///
+/// Same as `compare()` but accepts raw RGBA bytes instead of PNG.
 #[pyfunction]
 #[pyo3(name = "compare_rgba", signature = (
     baseline_rgba,
@@ -400,6 +431,7 @@ fn compare_rgba_py(
     Ok((diff_count, ssim, width, height, diff_bytes, thumb_bytes))
 }
 
+/// Diff multiple image pairs in parallel.
 #[pyfunction]
 #[pyo3(name = "diff_batch", signature = (
     pairs,
@@ -452,6 +484,7 @@ fn diff_batch_py(
         .collect())
 }
 
+/// Count mismatched pixels for multiple image pairs in parallel.
 #[pyfunction]
 #[pyo3(name = "diff_count_batch", signature = (
     pairs,
@@ -478,6 +511,7 @@ fn diff_count_batch_py(
     .map_err(to_py_err)
 }
 
+/// Compute SSIM for multiple image pairs in parallel.
 #[pyfunction]
 #[pyo3(name = "ssim_batch")]
 fn ssim_batch_py(py: Python<'_>, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<Vec<f64>> {
@@ -491,6 +525,10 @@ fn ssim_batch_py(py: Python<'_>, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<Vec
     .map_err(to_py_err)
 }
 
+/// Compare multiple image pairs in parallel (diff count + SSIM per pair).
+///
+/// Batch version of `compare()`. Set `thumbnail_width` to generate a
+/// thumbnail per pair.
 #[pyfunction]
 #[pyo3(name = "compare_batch", signature = (
     pairs,
