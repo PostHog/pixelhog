@@ -96,6 +96,13 @@ pub fn thumbnail_webp(
 ) -> Result<Vec<u8>, Error> {
     validate_rgba_len(rgba.len(), width, height)?;
 
+    if max_width == 0 {
+        return Err(Error::InvalidOption("thumbnail max_width must be > 0"));
+    }
+    if max_height == Some(0) {
+        return Err(Error::InvalidOption("thumbnail max_height must be > 0"));
+    }
+
     if width == 0 || height == 0 {
         let (w, h) = to_u32_dims(width, height)?;
         let rgb = rgba_to_rgb(rgba);
