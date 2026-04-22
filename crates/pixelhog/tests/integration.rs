@@ -232,15 +232,16 @@ fn test_compare_png_return_diff_toggle() {
     let current = solid_png(9, 9, [255, 20, 20, 255]);
     let options = PixelmatchOptions::default();
 
-    let (maybe_diff, diff_count, ssim, width, height) =
-        compare_png(&baseline, &current, &options, false).expect("compare without diff");
+    let (maybe_diff, diff_count, ssim, width, height, thumb) =
+        compare_png(&baseline, &current, &options, false, None).expect("compare without diff");
     assert!(maybe_diff.is_none());
+    assert!(thumb.is_none());
     assert_eq!((width, height), (9, 9));
     assert!(diff_count > 0);
     assert!((0.0..=1.0).contains(&ssim));
 
-    let (maybe_diff, diff_count_with_img, ssim_with_img, width_with_img, height_with_img) =
-        compare_png(&baseline, &current, &options, true).expect("compare with diff");
+    let (maybe_diff, diff_count_with_img, ssim_with_img, width_with_img, height_with_img, _) =
+        compare_png(&baseline, &current, &options, true, None).expect("compare with diff");
 
     assert_eq!((width_with_img, height_with_img), (9, 9));
     assert_eq!(diff_count_with_img, diff_count);

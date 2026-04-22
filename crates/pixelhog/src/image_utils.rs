@@ -1,6 +1,7 @@
 use crate::Error;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-use image::{ColorType, ImageEncoder, ImageFormat};
+use image::imageops::FilterType as ResizeFilter;
+use image::{ColorType, ImageEncoder, ImageFormat, RgbaImage};
 use std::borrow::Cow;
 
 /// `(rgba_bytes, width, height)`
@@ -23,24 +24,115 @@ pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedPng, Error> {
     Ok((raw, width, height))
 }
 
-/// Encode raw RGBA bytes into a PNG image.
-pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, Error> {
-    validate_rgba_len(rgba.len(), width, height)?;
+fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+    for px in rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&px[..3]);
+    }
+    rgb
+}
 
-    let width_u32 =
-        u32::try_from(width).map_err(|_| Error::DimensionTooLarge { dimension: "width" })?;
-    let height_u32 = u32::try_from(height).map_err(|_| Error::DimensionTooLarge {
+fn to_u32_dims(width: usize, height: usize) -> Result<(u32, u32), Error> {
+    let w = u32::try_from(width).map_err(|_| Error::DimensionTooLarge { dimension: "width" })?;
+    let h = u32::try_from(height).map_err(|_| Error::DimensionTooLarge {
         dimension: "height",
     })?;
+    Ok((w, h))
+}
+
+/// Encode raw RGBA bytes into an RGB PNG image (alpha channel is stripped).
+pub fn encode_png(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, Error> {
+    validate_rgba_len(rgba.len(), width, height)?;
+    let (width_u32, height_u32) = to_u32_dims(width, height)?;
+    let rgb = rgba_to_rgb(rgba);
 
     let mut out = Vec::new();
     let encoder =
-        PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter);
+        PngEncoder::new_with_quality(&mut out, CompressionType::Default, FilterType::Adaptive);
     encoder
-        .write_image(rgba, width_u32, height_u32, ColorType::Rgba8.into())
+        .write_image(&rgb, width_u32, height_u32, ColorType::Rgb8.into())
         .map_err(Error::Encode)?;
 
     Ok(out)
+}
+
+fn resize_rgba(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    new_width: usize,
+    new_height: usize,
+) -> Result<Vec<u8>, Error> {
+    let (w, h) = to_u32_dims(width, height)?;
+    let (nw, nh) = to_u32_dims(new_width, new_height)?;
+    let img = RgbaImage::from_raw(w, h, rgba.to_vec())
+        .ok_or_else(|| Error::Resize("failed to create image buffer".into()))?;
+    let resized = image::imageops::resize(&img, nw, nh, ResizeFilter::Lanczos3);
+    Ok(resized.into_raw())
+}
+
+fn encode_webp_lossless(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
+    use image::codecs::webp::WebPEncoder;
+
+    let mut out = Vec::new();
+    let encoder = WebPEncoder::new_lossless(&mut out);
+    encoder
+        .write_image(rgb, width, height, ColorType::Rgb8.into())
+        .map_err(Error::EncodeWebp)?;
+
+    Ok(out)
+}
+
+/// Resize RGBA bytes to a lossless WebP thumbnail.
+///
+/// Constrains to `max_width`. If `max_height` is set, crops from the top
+/// after resizing. Images already within bounds are re-encoded as-is.
+pub fn thumbnail_webp(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    max_width: usize,
+    max_height: Option<usize>,
+) -> Result<Vec<u8>, Error> {
+    validate_rgba_len(rgba.len(), width, height)?;
+
+    if max_width == 0 {
+        return Err(Error::InvalidOption("thumbnail max_width must be > 0"));
+    }
+    if max_height == Some(0) {
+        return Err(Error::InvalidOption("thumbnail max_height must be > 0"));
+    }
+
+    if width == 0 || height == 0 {
+        let (w, h) = to_u32_dims(width, height)?;
+        let rgb = rgba_to_rgb(rgba);
+        return encode_webp_lossless(&rgb, w, h);
+    }
+
+    let (scaled_w, scaled_h) = if width <= max_width {
+        (width, height)
+    } else {
+        let new_h = ((height as f64) * (max_width as f64) / (width as f64)).round() as usize;
+        (max_width, new_h.max(1))
+    };
+
+    let resized = if scaled_w == width && scaled_h == height {
+        rgba.to_vec()
+    } else {
+        resize_rgba(rgba, width, height, scaled_w, scaled_h)?
+    };
+
+    let (final_rgba, final_w, final_h) = match max_height {
+        Some(mh) if scaled_h > mh => {
+            let cropped_len = scaled_w * mh * 4;
+            (resized[..cropped_len].to_vec(), scaled_w, mh)
+        }
+        _ => (resized, scaled_w, scaled_h),
+    };
+
+    let (w32, h32) = to_u32_dims(final_w, final_h)?;
+    let rgb = rgba_to_rgb(&final_rgba);
+    encode_webp_lossless(&rgb, w32, h32)
 }
 
 /// Pad two RGBA images to matching dimensions using transparent pixels.

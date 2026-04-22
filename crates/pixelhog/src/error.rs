@@ -35,4 +35,12 @@ pub enum Error {
     /// Width or height value does not fit in a `u32` (PNG limit).
     #[error("image {dimension} is too large")]
     DimensionTooLarge { dimension: &'static str },
+
+    /// Resize/thumbnail operation failed.
+    #[error("failed to resize image: {0}")]
+    Resize(String),
+
+    /// WebP encoding failed.
+    #[error("failed to encode WebP: {0}")]
+    EncodeWebp(image::ImageError),
 }

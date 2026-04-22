@@ -5,8 +5,13 @@ from typing import Optional, Sequence
 PngPair = tuple[bytes, bytes]
 DiffResult = tuple[bytes, int, int, int]
 DiffCountResult = tuple[int, int, int]
-CompareResult = tuple[int, float, int, int, Optional[bytes]]
+CompareResult = tuple[int, float, int, int, Optional[bytes], Optional[bytes]]
 
+def thumbnail(
+    png_bytes: bytes,
+    width: int = 200,
+    height: Optional[int] = None,
+) -> bytes: ...
 def diff(
     baseline_png: bytes,
     current_png: bytes,
@@ -37,6 +42,8 @@ def compare(
     aa_color: tuple[int, int, int] = (255, 255, 0),
     diff_color_alt: Optional[tuple[int, int, int]] = None,
     return_diff: bool = False,
+    thumbnail_width: Optional[int] = None,
+    thumbnail_height: Optional[int] = None,
 ) -> CompareResult: ...
 def diff_rgba(
     baseline_rgba: bytes,
@@ -84,6 +91,8 @@ def compare_rgba(
     aa_color: tuple[int, int, int] = (255, 255, 0),
     diff_color_alt: Optional[tuple[int, int, int]] = None,
     return_diff: bool = False,
+    thumbnail_width: Optional[int] = None,
+    thumbnail_height: Optional[int] = None,
 ) -> CompareResult: ...
 def diff_batch(
     pairs: Sequence[PngPair],
@@ -111,11 +120,14 @@ def compare_batch(
     aa_color: tuple[int, int, int] = (255, 255, 0),
     diff_color_alt: Optional[tuple[int, int, int]] = None,
     return_diff: bool = False,
+    thumbnail_width: Optional[int] = None,
+    thumbnail_height: Optional[int] = None,
 ) -> list[CompareResult]: ...
 
 __version__: str
 
 __all__ = [
+    "thumbnail",
     "diff",
     "diff_count",
     "ssim",

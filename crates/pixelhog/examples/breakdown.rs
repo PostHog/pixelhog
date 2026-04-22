@@ -2,11 +2,11 @@ use std::time::Instant;
 
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder};
-use pixelhog::image_utils::{decode_png_rgba, encode_png_rgba, pad_images_to_largest_cow};
+use pixelhog::image_utils::{decode_png_rgba, encode_png, pad_images_to_largest_cow};
 use pixelhog::pixelmatch::{pixelmatch_rgba, PixelmatchOptions};
 use pixelhog::{diff_png, PixelmatchOptions as ApiPixelmatchOptions};
 
-fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
+fn encode_test_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let encoder = PngEncoder::new(&mut out);
     encoder
@@ -56,8 +56,8 @@ fn make_screenshot_pair(width: usize, height: usize) -> (Vec<u8>, Vec<u8>) {
     }
 
     (
-        encode_png(&baseline, width, height),
-        encode_png(&current, width, height),
+        encode_test_png(&baseline, width, height),
+        encode_test_png(&current, width, height),
     )
 }
 
@@ -99,7 +99,7 @@ fn main() {
         .expect("pixelmatch core");
         let t2 = Instant::now();
 
-        let _diff_png = encode_png_rgba(&out.diff_rgba, w, h).expect("encode diff png");
+        let _diff_png = encode_png(&out.diff_rgba, w, h).expect("encode diff png");
         let t3 = Instant::now();
 
         let _api = diff_png(&baseline_png, &current_png, &api_options).expect("api pixelmatch");
