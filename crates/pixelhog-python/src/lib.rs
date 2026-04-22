@@ -1,8 +1,8 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
 use ::pixelhog::{
-    compare_png, compare_rgba, diff_count_png, diff_count_rgba, diff_png, diff_rgba, ssim_png,
-    ssim_rgba, PixelmatchOptions,
+    compare_png, compare_rgba, create_thumbnail, diff_count_png, diff_count_rgba, diff_png,
+    diff_rgba, ssim_png, ssim_rgba, PixelmatchOptions, ThumbnailOptions,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -55,6 +55,30 @@ fn pixelmatch_count_options(threshold: f64, include_aa: bool) -> PyResult<Pixelm
         include_aa,
         ..PixelmatchOptions::default()
     })
+}
+
+fn thumbnail_options(
+    thumbnail_width: Option<usize>,
+    thumbnail_height: Option<usize>,
+) -> Option<ThumbnailOptions> {
+    thumbnail_width.map(|max_width| ThumbnailOptions {
+        max_width,
+        max_height: thumbnail_height,
+    })
+}
+
+#[pyfunction]
+#[pyo3(name = "thumbnail", signature = (png_bytes, width = 200, height = None))]
+fn thumbnail_py(
+    py: Python<'_>,
+    png_bytes: &[u8],
+    width: usize,
+    height: Option<usize>,
+) -> PyResult<Py<PyBytes>> {
+    let result = py
+        .allow_threads(|| create_thumbnail(png_bytes, width, height))
+        .map_err(to_py_err)?;
+    Ok(PyBytes::new(py, &result).into())
 }
 
 #[pyfunction]
@@ -133,6 +157,8 @@ fn ssim_py(py: Python<'_>, baseline_png: &[u8], current_png: &[u8]) -> PyResult<
     aa_color = (255, 255, 0),
     diff_color_alt = None,
     return_diff = false,
+    thumbnail_width = None,
+    thumbnail_height = None,
 ))]
 fn compare_py(
     py: Python<'_>,
@@ -145,7 +171,16 @@ fn compare_py(
     aa_color: (u8, u8, u8),
     diff_color_alt: Option<(u8, u8, u8)>,
     return_diff: bool,
-) -> PyResult<(usize, f64, usize, usize, Option<Py<PyBytes>>)> {
+    thumbnail_width: Option<usize>,
+    thumbnail_height: Option<usize>,
+) -> PyResult<(
+    usize,
+    f64,
+    usize,
+    usize,
+    Option<Py<PyBytes>>,
+    Option<Py<PyBytes>>,
+)> {
     let options = pixelmatch_options(
         threshold,
         alpha,
@@ -154,13 +189,23 @@ fn compare_py(
         aa_color,
         diff_color_alt,
     )?;
+    let thumb = thumbnail_options(thumbnail_width, thumbnail_height);
 
-    let (diff_png, diff_count, ssim, width, height) = py
-        .allow_threads(|| compare_png(baseline_png, current_png, &options, return_diff))
+    let (diff_png, diff_count, ssim, width, height, thumb_webp) = py
+        .allow_threads(|| {
+            compare_png(
+                baseline_png,
+                current_png,
+                &options,
+                return_diff,
+                thumb.as_ref(),
+            )
+        })
         .map_err(to_py_err)?;
 
     let diff_bytes = diff_png.map(|bytes| PyBytes::new(py, &bytes).into());
-    Ok((diff_count, ssim, width, height, diff_bytes))
+    let thumb_bytes = thumb_webp.map(|bytes| PyBytes::new(py, &bytes).into());
+    Ok((diff_count, ssim, width, height, diff_bytes, thumb_bytes))
 }
 
 #[pyfunction]
@@ -296,6 +341,8 @@ fn ssim_rgba_py(
     aa_color = (255, 255, 0),
     diff_color_alt = None,
     return_diff = false,
+    thumbnail_width = None,
+    thumbnail_height = None,
 ))]
 fn compare_rgba_py(
     py: Python<'_>,
@@ -312,7 +359,16 @@ fn compare_rgba_py(
     aa_color: (u8, u8, u8),
     diff_color_alt: Option<(u8, u8, u8)>,
     return_diff: bool,
-) -> PyResult<(usize, f64, usize, usize, Option<Py<PyBytes>>)> {
+    thumbnail_width: Option<usize>,
+    thumbnail_height: Option<usize>,
+) -> PyResult<(
+    usize,
+    f64,
+    usize,
+    usize,
+    Option<Py<PyBytes>>,
+    Option<Py<PyBytes>>,
+)> {
     let options = pixelmatch_options(
         threshold,
         alpha,
@@ -321,8 +377,9 @@ fn compare_rgba_py(
         aa_color,
         diff_color_alt,
     )?;
+    let thumb = thumbnail_options(thumbnail_width, thumbnail_height);
 
-    let (diff_rgba, diff_count, ssim, width, height) = py
+    let (diff_rgba, diff_count, ssim, width, height, thumb_webp) = py
         .allow_threads(|| {
             compare_rgba(
                 baseline_rgba,
@@ -333,12 +390,14 @@ fn compare_rgba_py(
                 current_height,
                 &options,
                 return_diff,
+                thumb.as_ref(),
             )
         })
         .map_err(to_py_err)?;
 
     let diff_bytes = diff_rgba.map(|bytes| PyBytes::new(py, &bytes).into());
-    Ok((diff_count, ssim, width, height, diff_bytes))
+    let thumb_bytes = thumb_webp.map(|bytes| PyBytes::new(py, &bytes).into());
+    Ok((diff_count, ssim, width, height, diff_bytes, thumb_bytes))
 }
 
 #[pyfunction]
@@ -442,6 +501,8 @@ fn ssim_batch_py(py: Python<'_>, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<Vec
     aa_color = (255, 255, 0),
     diff_color_alt = None,
     return_diff = false,
+    thumbnail_width = None,
+    thumbnail_height = None,
 ))]
 fn compare_batch_py(
     py: Python<'_>,
@@ -453,7 +514,18 @@ fn compare_batch_py(
     aa_color: (u8, u8, u8),
     diff_color_alt: Option<(u8, u8, u8)>,
     return_diff: bool,
-) -> PyResult<Vec<(usize, f64, usize, usize, Option<Py<PyBytes>>)>> {
+    thumbnail_width: Option<usize>,
+    thumbnail_height: Option<usize>,
+) -> PyResult<
+    Vec<(
+        usize,
+        f64,
+        usize,
+        usize,
+        Option<Py<PyBytes>>,
+        Option<Py<PyBytes>>,
+    )>,
+> {
     let options = pixelmatch_options(
         threshold,
         alpha,
@@ -462,13 +534,20 @@ fn compare_batch_py(
         aa_color,
         diff_color_alt,
     )?;
+    let thumb = thumbnail_options(thumbnail_width, thumbnail_height);
 
     let results = py
         .allow_threads(|| {
             let r: Result<Vec<_>, ::pixelhog::Error> = pairs
                 .into_par_iter()
                 .map(|(baseline_png, current_png)| {
-                    compare_png(&baseline_png, &current_png, &options, return_diff)
+                    compare_png(
+                        &baseline_png,
+                        &current_png,
+                        &options,
+                        return_diff,
+                        thumb.as_ref(),
+                    )
                 })
                 .collect();
             r
@@ -477,9 +556,10 @@ fn compare_batch_py(
 
     Ok(results
         .into_iter()
-        .map(|(diff_png, diff_count, ssim, width, height)| {
+        .map(|(diff_png, diff_count, ssim, width, height, thumb_webp)| {
             let diff_bytes = diff_png.map(|bytes| PyBytes::new(py, &bytes).into());
-            (diff_count, ssim, width, height, diff_bytes)
+            let thumb_bytes = thumb_webp.map(|bytes| PyBytes::new(py, &bytes).into());
+            (diff_count, ssim, width, height, diff_bytes, thumb_bytes)
         })
         .collect())
 }
@@ -488,6 +568,7 @@ fn compare_batch_py(
 fn pixelhog(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
 
+    m.add_function(wrap_pyfunction!(thumbnail_py, m)?)?;
     m.add_function(wrap_pyfunction!(diff_py, m)?)?;
     m.add_function(wrap_pyfunction!(diff_count_py, m)?)?;
     m.add_function(wrap_pyfunction!(ssim_py, m)?)?;

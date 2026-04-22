@@ -2,13 +2,13 @@ use std::time::Instant;
 
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder};
-use pixelhog::image_utils::{decode_png_rgba, encode_png_rgba, pad_images_to_largest_cow};
+use pixelhog::image_utils::{decode_png_rgba, encode_png, pad_images_to_largest_cow};
 use pixelhog::pixelmatch::PixelmatchOptions as CorePixelmatchOptions;
 use pixelhog::ssim::compute_ssim_rgba;
 use pixelhog::{diff_png, ssim_png, PixelmatchOptions as ApiPixelmatchOptions};
 use rayon::join;
 
-fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
+fn encode_test_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let encoder = PngEncoder::new(&mut out);
     encoder
@@ -58,8 +58,8 @@ fn make_screenshot_pair(width: usize, height: usize) -> (Vec<u8>, Vec<u8>) {
     }
 
     (
-        encode_png(&baseline, width, height),
-        encode_png(&current, width, height),
+        encode_test_png(&baseline, width, height),
+        encode_test_png(&current, width, height),
     )
 }
 
@@ -112,7 +112,7 @@ fn main() {
         .expect("core pixelmatch");
         let _score = compute_ssim_rgba(baseline_padded.as_ref(), current_padded.as_ref(), w, h)
             .expect("core ssim");
-        let _diff_png = encode_png_rgba(&diff.diff_rgba, w, h).expect("encode diff");
+        let _diff_png = encode_png(&diff.diff_rgba, w, h).expect("encode diff");
         let t3 = Instant::now();
 
         combined_ms.push((t3 - t2).as_secs_f64() * 1000.0);

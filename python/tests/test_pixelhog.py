@@ -17,6 +17,7 @@ from pixelhog import (
     ssim,
     ssim_batch,
     ssim_rgba,
+    thumbnail,
 )
 
 
@@ -551,15 +552,16 @@ def test_compare_return_diff_flag_behavior() -> None:
     baseline = solid_png(15, 9, (5, 10, 15, 255))
     current = solid_png(15, 9, (255, 10, 15, 255))
 
-    diff_pixels, score, width, height, maybe_diff = compare(
+    diff_pixels, score, width, height, maybe_diff, maybe_thumb = compare(
         baseline, current, return_diff=False
     )
     assert maybe_diff is None
+    assert maybe_thumb is None
     assert (width, height) == (15, 9)
     assert diff_pixels > 0
     assert 0.0 <= score <= 1.0
 
-    diff_pixels_with_img, score_with_img, _, _, diff_png = compare(
+    diff_pixels_with_img, score_with_img, _, _, diff_png, _ = compare(
         baseline, current, return_diff=True
     )
     assert diff_png is not None
@@ -596,7 +598,7 @@ def test_rgba_entry_points_match_png_entry_points() -> None:
     assert (png_diff_w, png_diff_h) == (rgba_w, rgba_h)
     assert png_diff_raw == rgba_diff_raw
 
-    diff_pixels, score, cmp_w, cmp_h, cmp_rgba = compare_rgba(
+    diff_pixels, score, cmp_w, cmp_h, cmp_rgba, _ = compare_rgba(
         baseline_raw,
         bw,
         bh,
@@ -641,8 +643,66 @@ def test_batch_apis_return_expected_shapes() -> None:
         with Image.open(io.BytesIO(diff_png)) as img:
             assert img.size == (8, 8)
 
-        cmp_pixels, cmp_ssim, cmp_w, cmp_h, cmp_diff_png = compare_results[idx]
+        cmp_pixels, cmp_ssim, cmp_w, cmp_h, cmp_diff_png, _ = compare_results[idx]
         assert (cmp_w, cmp_h) == (8, 8)
         assert cmp_pixels == diff_pixels
         assert cmp_ssim == pytest.approx(ssim_results[idx], rel=0.0, abs=1e-12)
         assert cmp_diff_png == diff_png
+
+
+def test_thumbnail_standalone_width_only() -> None:
+    png = solid_png(400, 300, (100, 150, 200, 255))
+    thumb = thumbnail(png, width=200)
+    assert thumb[:4] == b"RIFF"  # WebP magic bytes
+    with Image.open(io.BytesIO(thumb)) as img:
+        assert img.format == "WEBP"
+        assert img.width == 200
+        assert img.height == 150
+
+
+def test_thumbnail_standalone_with_height_crop() -> None:
+    png = solid_png(400, 800, (100, 150, 200, 255))
+    thumb = thumbnail(png, width=200, height=150)
+    with Image.open(io.BytesIO(thumb)) as img:
+        assert img.format == "WEBP"
+        assert img.width == 200
+        assert img.height == 150
+
+
+def test_thumbnail_already_small() -> None:
+    png = solid_png(100, 80, (50, 50, 50, 255))
+    thumb = thumbnail(png, width=200)
+    with Image.open(io.BytesIO(thumb)) as img:
+        assert img.format == "WEBP"
+        assert img.width == 100
+        assert img.height == 80
+
+
+def test_compare_with_thumbnail() -> None:
+    baseline = solid_png(400, 300, (100, 100, 100, 255))
+    current = solid_png(400, 300, (200, 100, 100, 255))
+
+    diff_pixels, score, w, h, diff_png, thumb = compare(
+        baseline, current, return_diff=True, thumbnail_width=100
+    )
+    assert diff_pixels > 0
+    assert diff_png is not None
+    assert thumb is not None
+    with Image.open(io.BytesIO(thumb)) as img:
+        assert img.format == "WEBP"
+        assert img.width == 100
+        assert img.height == 75
+
+
+def test_compare_thumbnail_with_height_crop() -> None:
+    baseline = solid_png(400, 800, (100, 100, 100, 255))
+    current = solid_png(400, 800, (200, 100, 100, 255))
+
+    _, _, _, _, _, thumb = compare(
+        baseline, current, thumbnail_width=200, thumbnail_height=150
+    )
+    assert thumb is not None
+    with Image.open(io.BytesIO(thumb)) as img:
+        assert img.format == "WEBP"
+        assert img.width == 200
+        assert img.height == 150
