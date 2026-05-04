@@ -105,7 +105,7 @@ pub fn compute_clusters(
     // Collect clusters that meet the minimum size.
     stats
         .into_iter()
-        .filter(|s| s.pixel_count >= min_cluster_size)
+        .filter(|s| s.pixel_count > 0 && s.pixel_count >= min_cluster_size)
         .map(|s| DiffCluster {
             bbox: BoundingBox {
                 x: s.min_x,
@@ -275,6 +275,22 @@ mod tests {
         let clusters = compute_clusters(&mask, 10, 10, 3);
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].pixel_count, 5);
+    }
+
+    #[test]
+    fn min_cluster_size_zero_no_panic() {
+        let mut mask = vec![false; 25];
+        mask[12] = true;
+        let clusters = compute_clusters(&mask, 5, 5, 0);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].pixel_count, 1);
+    }
+
+    #[test]
+    fn empty_mask_min_cluster_size_zero_no_panic() {
+        let mask = vec![false; 100];
+        let clusters = compute_clusters(&mask, 10, 10, 0);
+        assert!(clusters.is_empty());
     }
 
     #[test]
