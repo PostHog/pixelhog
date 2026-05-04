@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.2.0
+
+**Spatial clustering.** New `clusters()` method returns connected-component regions of
+differing pixels with bounding boxes, pixel counts, and centroids. Uses two-pass CCL with
+8-connectivity and union-find. Answers "where on the page did things change" for auto-approval
+rules, LLM triage, or UI overlays. ~15% overhead over count-only.
+
+**Performance: threshold=0 fast path.** When threshold is 0 and AA detection is off, the
+count-only and mask paths skip `color_delta` entirely and just count u32 mismatches. ~25%
+faster across all image sizes for this scenario.
+
+**Performance: early exit.** New `diff_count_capped(max_diffs)` stops processing once enough
+diffs are found. Sub-100µs for a quick-fail check regardless of image size.
+
+**Comparison object API.** New `Comparison` class decodes PNGs once at construction, then
+exposes individual methods: `diff_count()`, `ssim()`, `clusters()`, `diff_image()`,
+`thumbnail()`, `diff_count_capped()`. Also available via `Comparison.from_rgba()` and
+`Comparison.batch()`. Exposed as `#[pyclass]` with proper `BoundingBox` and `Cluster` result
+types. Old function-based API stays untouched.
+
+**Expanded benchmarks.** 9 groups covering 2.1M / 2.5M / 18M pixel images across count-only,
+diff image, SSIM, compare, clusters, early exit, identical, and small-diff scenarios.
+
 ## 1.1.0
 
 **Diff PNG output is now 97% smaller.** Encoding switched from `Fast + NoFilter + RGBA`
