@@ -15,21 +15,49 @@ pub struct DiffCluster {
     pub centroid: (f64, f64),
 }
 
+/// Options for cluster extraction.
+pub struct ClusterOptions {
+    /// Discard clusters with fewer than this many pixels.
+    pub min_pixels: usize,
+    /// Discard clusters where `min(bbox.width, bbox.height) < min_side`.
+    pub min_side: usize,
+    /// Dilate the diff mask by this many pixels before CCL.
+    /// Merges nearby diff regions that belong to the same visual change.
+    pub dilation: usize,
+}
+
+impl Default for ClusterOptions {
+    fn default() -> Self {
+        Self {
+            min_pixels: 16,
+            min_side: 0,
+            dilation: 4,
+        }
+    }
+}
+
 /// Compute connected-component clusters from a binary diff mask.
 ///
-/// Uses two-pass CCL with 8-connectivity and union-find.
-/// Clusters smaller than `min_cluster_size` are discarded.
+/// Uses optional dilation to merge nearby regions, two-pass CCL with
+/// 8-connectivity and union-find, then filters by size constraints.
+/// Results are sorted by `pixel_count` descending.
 pub fn compute_clusters(
     diff_mask: &[bool],
     width: usize,
     height: usize,
-    min_cluster_size: usize,
+    options: &ClusterOptions,
 ) -> Vec<DiffCluster> {
     assert_eq!(diff_mask.len(), width * height);
 
     if width == 0 || height == 0 {
         return Vec::new();
     }
+
+    let mask = if options.dilation > 0 {
+        dilate_mask(diff_mask, width, height, options.dilation)
+    } else {
+        diff_mask.to_vec()
+    };
 
     let mut labels = vec![0u32; width * height];
     let mut uf = UnionFind::new();
@@ -40,7 +68,7 @@ pub fn compute_clusters(
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
-            if !diff_mask[idx] {
+            if !mask[idx] {
                 continue;
             }
 
@@ -102,10 +130,12 @@ pub fn compute_clusters(
         }
     }
 
-    // Collect clusters that meet the minimum size.
-    stats
+    let min_pixels = options.min_pixels;
+    let min_side = options.min_side;
+
+    let mut clusters: Vec<DiffCluster> = stats
         .into_iter()
-        .filter(|s| s.pixel_count > 0 && s.pixel_count >= min_cluster_size)
+        .filter(|s| s.pixel_count > 0 && s.pixel_count >= min_pixels)
         .map(|s| DiffCluster {
             bbox: BoundingBox {
                 x: s.min_x,
@@ -119,7 +149,34 @@ pub fn compute_clusters(
                 s.sum_y as f64 / s.pixel_count as f64,
             ),
         })
-        .collect()
+        .filter(|c| min_side == 0 || c.bbox.width.min(c.bbox.height) >= min_side)
+        .collect();
+
+    clusters.sort_by(|a, b| b.pixel_count.cmp(&a.pixel_count));
+    clusters
+}
+
+/// Dilate a boolean mask by `radius` pixels (square structuring element).
+fn dilate_mask(mask: &[bool], width: usize, height: usize, radius: usize) -> Vec<bool> {
+    let mut dilated = mask.to_vec();
+    for y in 0..height {
+        for x in 0..width {
+            if !mask[y * width + x] {
+                continue;
+            }
+            let y_min = y.saturating_sub(radius);
+            let y_max = (y + radius).min(height - 1);
+            let x_min = x.saturating_sub(radius);
+            let x_max = (x + radius).min(width - 1);
+            for dy in y_min..=y_max {
+                let row_start = dy * width;
+                for dx in x_min..=x_max {
+                    dilated[row_start + dx] = true;
+                }
+            }
+        }
+    }
+    dilated
 }
 
 // -- Union-Find --------------------------------------------------------------
@@ -206,10 +263,18 @@ impl Default for ClusterStats {
 mod tests {
     use super::*;
 
+    fn opts(min_pixels: usize) -> ClusterOptions {
+        ClusterOptions {
+            min_pixels,
+            min_side: 0,
+            dilation: 0,
+        }
+    }
+
     #[test]
     fn empty_mask_produces_no_clusters() {
         let mask = vec![false; 100];
-        let clusters = compute_clusters(&mask, 10, 10, 1);
+        let clusters = compute_clusters(&mask, 10, 10, &opts(1));
         assert!(clusters.is_empty());
     }
 
@@ -217,7 +282,7 @@ mod tests {
     fn single_pixel_cluster() {
         let mut mask = vec![false; 25];
         mask[12] = true; // (2, 2) in a 5x5 grid
-        let clusters = compute_clusters(&mask, 5, 5, 1);
+        let clusters = compute_clusters(&mask, 5, 5, &opts(1));
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].pixel_count, 1);
         assert_eq!(clusters[0].bbox.x, 2);
@@ -228,7 +293,6 @@ mod tests {
 
     #[test]
     fn two_separate_clusters() {
-        // 10x10 grid with two 2x2 blocks far apart
         let mut mask = vec![false; 100];
         // Block at (0,0)
         mask[0] = true;
@@ -241,70 +305,159 @@ mod tests {
         mask[98] = true;
         mask[99] = true;
 
-        let clusters = compute_clusters(&mask, 10, 10, 1);
+        let clusters = compute_clusters(&mask, 10, 10, &opts(1));
         assert_eq!(clusters.len(), 2);
+        // Sorted by pixel_count desc — both are 4, order is stable
         assert_eq!(clusters[0].pixel_count, 4);
         assert_eq!(clusters[1].pixel_count, 4);
     }
 
     #[test]
     fn diagonal_connectivity() {
-        // 8-connectivity: diagonally adjacent pixels should be in the same cluster
         let mut mask = vec![false; 9];
         mask[0] = true; // (0,0)
         mask[4] = true; // (1,1)
         mask[8] = true; // (2,2)
 
-        let clusters = compute_clusters(&mask, 3, 3, 1);
+        let clusters = compute_clusters(&mask, 3, 3, &opts(1));
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].pixel_count, 3);
     }
 
     #[test]
-    fn min_cluster_size_filters_small() {
+    fn min_pixels_filters_small() {
         let mut mask = vec![false; 100];
-        // 1-pixel cluster
         mask[5] = true;
-        // 5-pixel cluster
         mask[50] = true;
         mask[51] = true;
         mask[52] = true;
         mask[60] = true;
         mask[61] = true;
 
-        let clusters = compute_clusters(&mask, 10, 10, 3);
+        let clusters = compute_clusters(&mask, 10, 10, &opts(3));
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].pixel_count, 5);
     }
 
     #[test]
-    fn min_cluster_size_zero_no_panic() {
+    fn min_pixels_zero_no_panic() {
         let mut mask = vec![false; 25];
         mask[12] = true;
-        let clusters = compute_clusters(&mask, 5, 5, 0);
+        let clusters = compute_clusters(&mask, 5, 5, &opts(0));
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].pixel_count, 1);
     }
 
     #[test]
-    fn empty_mask_min_cluster_size_zero_no_panic() {
+    fn empty_mask_min_pixels_zero_no_panic() {
         let mask = vec![false; 100];
-        let clusters = compute_clusters(&mask, 10, 10, 0);
+        let clusters = compute_clusters(&mask, 10, 10, &opts(0));
         assert!(clusters.is_empty());
     }
 
     #[test]
     fn centroid_calculation() {
-        // Horizontal line at y=5, x=2..=4
         let mut mask = vec![false; 100];
         mask[52] = true; // (2,5)
         mask[53] = true; // (3,5)
         mask[54] = true; // (4,5)
 
-        let clusters = compute_clusters(&mask, 10, 10, 1);
+        let clusters = compute_clusters(&mask, 10, 10, &opts(1));
         assert_eq!(clusters.len(), 1);
         let c = &clusters[0];
         assert!((c.centroid.0 - 3.0).abs() < f64::EPSILON);
         assert!((c.centroid.1 - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sorted_by_pixel_count_desc() {
+        let mut mask = vec![false; 100];
+        // 1-pixel cluster
+        mask[5] = true;
+        // 3-pixel cluster
+        mask[50] = true;
+        mask[51] = true;
+        mask[52] = true;
+
+        let clusters = compute_clusters(&mask, 10, 10, &opts(1));
+        assert_eq!(clusters.len(), 2);
+        assert!(clusters[0].pixel_count >= clusters[1].pixel_count);
+    }
+
+    #[test]
+    fn min_side_filters_thin_clusters() {
+        let mut mask = vec![false; 100];
+        // 10×1 horizontal line at y=5
+        for x in 0..10 {
+            mask[50 + x] = true;
+        }
+        // 3×3 block
+        mask[0] = true;
+        mask[1] = true;
+        mask[2] = true;
+        mask[10] = true;
+        mask[11] = true;
+        mask[12] = true;
+        mask[20] = true;
+        mask[21] = true;
+        mask[22] = true;
+
+        let no_filter = compute_clusters(
+            &mask,
+            10,
+            10,
+            &ClusterOptions {
+                min_pixels: 1,
+                min_side: 0,
+                dilation: 0,
+            },
+        );
+        assert_eq!(no_filter.len(), 2);
+
+        let with_min_side = compute_clusters(
+            &mask,
+            10,
+            10,
+            &ClusterOptions {
+                min_pixels: 1,
+                min_side: 2,
+                dilation: 0,
+            },
+        );
+        assert_eq!(with_min_side.len(), 1);
+        assert_eq!(with_min_side[0].pixel_count, 9); // the 3×3 block
+    }
+
+    #[test]
+    fn dilation_merges_nearby_clusters() {
+        // Two 1-pixel dots separated by 2 pixels — without dilation they're separate
+        let mut mask = vec![false; 100];
+        mask[50] = true; // (0,5)
+        mask[53] = true; // (3,5)
+
+        let no_dilation = compute_clusters(
+            &mask,
+            10,
+            10,
+            &ClusterOptions {
+                min_pixels: 1,
+                min_side: 0,
+                dilation: 0,
+            },
+        );
+        assert_eq!(no_dilation.len(), 2);
+
+        // With dilation=2, the dots expand and overlap
+        let with_dilation = compute_clusters(
+            &mask,
+            10,
+            10,
+            &ClusterOptions {
+                min_pixels: 1,
+                min_side: 0,
+                dilation: 2,
+            },
+        );
+        assert_eq!(with_dilation.len(), 1);
     }
 }

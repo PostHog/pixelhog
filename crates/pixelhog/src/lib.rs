@@ -20,7 +20,7 @@ use pixelmatch::{pixelmatch_count_rgba, pixelmatch_mask_rgba, pixelmatch_rgba};
 use rayon::join;
 use ssim::compute_ssim_rgba;
 
-pub use clusters::{BoundingBox, DiffCluster};
+pub use clusters::{BoundingBox, ClusterOptions, DiffCluster};
 pub use comparison::Comparison;
 pub use error::Error;
 pub use pixelmatch::pixelmatch_count_rgba_capped;
@@ -366,12 +366,11 @@ pub fn compare_rgba(
 /// Compute diff clusters from two PNG images.
 ///
 /// Returns the diff count plus connected-component clusters of changed pixels.
-/// Clusters smaller than `min_cluster_size` are discarded.
 pub fn diff_clusters_png(
     baseline_png: &[u8],
     current_png: &[u8],
     options: &PixelmatchOptions,
-    min_cluster_size: usize,
+    cluster_options: &ClusterOptions,
 ) -> Result<(usize, Vec<DiffCluster>, usize, usize), Error> {
     let (
         (baseline_rgba, baseline_width, baseline_height),
@@ -386,7 +385,7 @@ pub fn diff_clusters_png(
         current_width,
         current_height,
         options,
-        min_cluster_size,
+        cluster_options,
     )
 }
 
@@ -400,7 +399,7 @@ pub fn diff_clusters_rgba(
     current_width: usize,
     current_height: usize,
     options: &PixelmatchOptions,
-    min_cluster_size: usize,
+    cluster_options: &ClusterOptions,
 ) -> Result<(usize, Vec<DiffCluster>, usize, usize), Error> {
     let (baseline_padded, current_padded, width, height) = pad_images_to_largest_cow(
         baseline_rgba,
@@ -419,7 +418,7 @@ pub fn diff_clusters_rgba(
         options,
     )?;
 
-    let clusters = compute_clusters(&mask_output.diff_mask, width, height, min_cluster_size);
+    let clusters = compute_clusters(&mask_output.diff_mask, width, height, cluster_options);
 
     Ok((mask_output.diff_count, clusters, width, height))
 }

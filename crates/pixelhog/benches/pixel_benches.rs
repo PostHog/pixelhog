@@ -3,7 +3,7 @@ use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder};
 use pixelhog::{
     compare_png, diff_clusters_png, diff_count_png, diff_png, pixelmatch_count_rgba_capped,
-    ssim_png, ComparePngOutput, DiffCountOutput, DiffPngOutput, PixelmatchOptions,
+    ssim_png, ClusterOptions, ComparePngOutput, DiffCountOutput, DiffPngOutput, PixelmatchOptions,
 };
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
@@ -374,10 +374,11 @@ fn bench_identical(c: &mut Criterion) {
     group.finish();
 }
 
-/// Cluster computation (mask + CCL)
+/// Cluster computation (mask + dilation + CCL)
 fn bench_clusters(c: &mut Criterion) {
     let mut group = c.benchmark_group("clusters");
     let options = PixelmatchOptions::default();
+    let cluster_opts = ClusterOptions::default();
 
     for img in IMAGES {
         let (baseline, current) = make_screenshot_pair(img.width, img.height);
@@ -390,7 +391,7 @@ fn bench_clusters(c: &mut Criterion) {
                         black_box(baseline),
                         black_box(current),
                         black_box(&options),
-                        1,
+                        black_box(&cluster_opts),
                     )
                     .unwrap();
                     black_box(r);
@@ -411,7 +412,7 @@ fn bench_clusters(c: &mut Criterion) {
                         black_box(baseline),
                         black_box(current),
                         black_box(&options),
-                        1,
+                        black_box(&cluster_opts),
                     )
                     .unwrap();
                     black_box(r);

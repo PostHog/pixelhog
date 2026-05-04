@@ -3,7 +3,7 @@ use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder, ImageFormat};
 use pixelhog::{
     compare_png, diff_clusters_png, diff_count_png, diff_png, diff_rgba, ssim_png, ssim_rgba,
-    PixelmatchOptions,
+    ClusterOptions, PixelmatchOptions,
 };
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
@@ -304,8 +304,17 @@ fn test_clusters_two_separate_regions() {
     let current = encode_png(&current_rgba, width, height);
 
     let options = PixelmatchOptions::default();
-    let (diff_count, clusters, w, h) =
-        diff_clusters_png(&baseline, &current, &options, 1).expect("clusters");
+    let (diff_count, clusters, w, h) = diff_clusters_png(
+        &baseline,
+        &current,
+        &options,
+        &ClusterOptions {
+            min_pixels: 1,
+            min_side: 0,
+            dilation: 0,
+        },
+    )
+    .expect("clusters");
 
     assert_eq!((w, h), (width, height));
     assert_eq!(diff_count, 200); // 2 blocks × 100 pixels
@@ -325,8 +334,17 @@ fn test_clusters_count_matches_diff_count() {
 
     let options = PixelmatchOptions::default();
     let (count, _, _) = diff_count_png(&baseline, &current, &options).expect("count");
-    let (cluster_count, clusters, _, _) =
-        diff_clusters_png(&baseline, &current, &options, 1).expect("clusters");
+    let (cluster_count, clusters, _, _) = diff_clusters_png(
+        &baseline,
+        &current,
+        &options,
+        &ClusterOptions {
+            min_pixels: 1,
+            min_side: 0,
+            dilation: 0,
+        },
+    )
+    .expect("clusters");
 
     assert_eq!(count, cluster_count);
     // All pixels differ → one big cluster
@@ -339,8 +357,17 @@ fn test_clusters_identical_images_empty() {
     let img = solid_png(20, 20, [128, 128, 128, 255]);
     let options = PixelmatchOptions::default();
 
-    let (diff_count, clusters, _, _) =
-        diff_clusters_png(&img, &img, &options, 1).expect("clusters");
+    let (diff_count, clusters, _, _) = diff_clusters_png(
+        &img,
+        &img,
+        &options,
+        &ClusterOptions {
+            min_pixels: 1,
+            min_side: 0,
+            dilation: 0,
+        },
+    )
+    .expect("clusters");
 
     assert_eq!(diff_count, 0);
     assert!(clusters.is_empty());

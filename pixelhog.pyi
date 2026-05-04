@@ -159,6 +159,12 @@ class Comparison:
     def width(self) -> int: ...
     @property
     def height(self) -> int: ...
+    @property
+    def size_mismatch(self) -> bool: ...
+    @property
+    def baseline_size(self) -> tuple[int, int]: ...
+    @property
+    def current_size(self) -> tuple[int, int]: ...
     def diff_count(
         self,
         threshold: float = 0.1,
@@ -175,7 +181,9 @@ class Comparison:
         self,
         threshold: float = 0.1,
         include_aa: bool = False,
-        min_cluster_size: int = 1,
+        min_pixels: int = 16,
+        min_side: int = 0,
+        dilation: int = 4,
     ) -> list[Cluster]: ...
     def diff_image(
         self,
@@ -186,7 +194,12 @@ class Comparison:
         aa_color: tuple[int, int, int] = (255, 255, 0),
         diff_color_alt: Optional[tuple[int, int, int]] = None,
     ) -> bytes: ...
-    def thumbnail(
+    def current_thumbnail(
+        self,
+        width: int = 200,
+        height: Optional[int] = None,
+    ) -> bytes: ...
+    def baseline_thumbnail(
         self,
         width: int = 200,
         height: Optional[int] = None,

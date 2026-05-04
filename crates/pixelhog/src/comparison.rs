@@ -1,4 +1,4 @@
-use crate::clusters::{compute_clusters, DiffCluster};
+use crate::clusters::{compute_clusters, ClusterOptions, DiffCluster};
 use crate::image_utils::{decode_png_rgba, encode_png, pad_images_to_largest_cow, thumbnail_webp};
 use crate::pixelmatch::{
     pixelmatch_count_rgba, pixelmatch_count_rgba_capped, pixelmatch_mask_rgba, pixelmatch_rgba,
@@ -18,16 +18,13 @@ pub struct Comparison {
     current_rgba: Vec<u8>,
     width: usize,
     height: usize,
-    // Original current image for thumbnail generation.
-    // `None` when images were the same size (no padding happened),
-    // so `current_rgba` can be used directly.
-    current_original: Option<OriginalImage>,
-}
-
-struct OriginalImage {
-    rgba: Vec<u8>,
-    width: usize,
-    height: usize,
+    baseline_width: usize,
+    baseline_height: usize,
+    current_width: usize,
+    current_height: usize,
+    // Original images for thumbnail generation when sizes differ.
+    baseline_original: Option<Vec<u8>>,
+    current_original: Option<Vec<u8>>,
 }
 
 impl Comparison {
@@ -70,14 +67,10 @@ impl Comparison {
     ) -> Result<Self, Error> {
         let needs_padding = baseline_width != current_width || baseline_height != current_height;
 
-        let current_original = if needs_padding {
-            Some(OriginalImage {
-                rgba: current.clone(),
-                width: current_width,
-                height: current_height,
-            })
+        let (baseline_original, current_original) = if needs_padding {
+            (Some(baseline.clone()), Some(current.clone()))
         } else {
-            None
+            (None, None)
         };
 
         let (baseline_padded, current_padded, width, height) = pad_images_to_largest_cow(
@@ -94,6 +87,11 @@ impl Comparison {
             current_rgba: current_padded.into_owned(),
             width,
             height,
+            baseline_width,
+            baseline_height,
+            current_width,
+            current_height,
+            baseline_original,
             current_original,
         })
     }
@@ -104,6 +102,18 @@ impl Comparison {
 
     pub fn height(&self) -> usize {
         self.height
+    }
+
+    pub fn size_mismatch(&self) -> bool {
+        self.baseline_width != self.current_width || self.baseline_height != self.current_height
+    }
+
+    pub fn baseline_size(&self) -> (usize, usize) {
+        (self.baseline_width, self.baseline_height)
+    }
+
+    pub fn current_size(&self) -> (usize, usize) {
+        (self.current_width, self.current_height)
     }
 
     pub fn diff_count(&self, options: &PixelmatchOptions) -> Result<usize, Error> {
@@ -145,7 +155,7 @@ impl Comparison {
     pub fn clusters(
         &self,
         options: &PixelmatchOptions,
-        min_cluster_size: usize,
+        cluster_options: &ClusterOptions,
     ) -> Result<Vec<DiffCluster>, Error> {
         let mask_output = pixelmatch_mask_rgba(
             &self.baseline_rgba,
@@ -158,7 +168,7 @@ impl Comparison {
             &mask_output.diff_mask,
             self.width,
             self.height,
-            min_cluster_size,
+            cluster_options,
         ))
     }
 
@@ -181,10 +191,27 @@ impl Comparison {
     ///
     /// Uses the original (pre-padding) image so the thumbnail has the
     /// correct aspect ratio even when images were different sizes.
-    pub fn thumbnail(&self, max_width: usize, max_height: Option<usize>) -> Result<Vec<u8>, Error> {
+    pub fn current_thumbnail(
+        &self,
+        max_width: usize,
+        max_height: Option<usize>,
+    ) -> Result<Vec<u8>, Error> {
         let (rgba, w, h) = match &self.current_original {
-            Some(orig) => (orig.rgba.as_slice(), orig.width, orig.height),
+            Some(orig) => (orig.as_slice(), self.current_width, self.current_height),
             None => (self.current_rgba.as_slice(), self.width, self.height),
+        };
+        thumbnail_webp(rgba, w, h, max_width, max_height)
+    }
+
+    /// Generate a lossless WebP thumbnail of the baseline image.
+    pub fn baseline_thumbnail(
+        &self,
+        max_width: usize,
+        max_height: Option<usize>,
+    ) -> Result<Vec<u8>, Error> {
+        let (rgba, w, h) = match &self.baseline_original {
+            Some(orig) => (orig.as_slice(), self.baseline_width, self.baseline_height),
+            None => (self.baseline_rgba.as_slice(), self.width, self.height),
         };
         thumbnail_webp(rgba, w, h, max_width, max_height)
     }

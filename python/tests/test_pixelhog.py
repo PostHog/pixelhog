@@ -771,7 +771,7 @@ class TestComparison:
         current = out.getvalue()
 
         cmp = Comparison(baseline, current)
-        clusters = cmp.clusters(min_cluster_size=1)
+        clusters = cmp.clusters(min_pixels=1, dilation=0)
 
         assert len(clusters) >= 1
         c = clusters[0]
@@ -799,10 +799,10 @@ class TestComparison:
 
         cmp = Comparison(baseline, current)
 
-        all_clusters = cmp.clusters(min_cluster_size=1)
+        all_clusters = cmp.clusters(min_pixels=1, dilation=0)
         assert len(all_clusters) == 2
 
-        big_only = cmp.clusters(min_cluster_size=50)
+        big_only = cmp.clusters(min_pixels=50, dilation=0)
         assert len(big_only) == 1
         assert big_only[0].pixel_count == 225
 
@@ -821,7 +821,7 @@ class TestComparison:
         current = solid_png(400, 800, (200, 100, 100, 255))
         cmp = Comparison(baseline, current)
 
-        thumb = cmp.thumbnail(width=200)
+        thumb = cmp.current_thumbnail(width=200)
         assert isinstance(thumb, bytes)
         with Image.open(io.BytesIO(thumb)) as img:
             assert img.format == "WEBP"
@@ -832,7 +832,7 @@ class TestComparison:
         current = solid_png(400, 800, (200, 100, 100, 255))
         cmp = Comparison(baseline, current)
 
-        thumb = cmp.thumbnail(width=200, height=150)
+        thumb = cmp.current_thumbnail(width=200, height=150)
         with Image.open(io.BytesIO(thumb)) as img:
             assert img.width == 200
             assert img.height == 150
@@ -877,5 +877,69 @@ class TestComparison:
 
         assert cmp.width == 80
         assert cmp.height == 60
-        # Padded region is transparent vs opaque → some diffs
         assert cmp.diff_count() > 0
+
+    def test_size_mismatch_detected(self):
+        baseline = solid_png(50, 50, (100, 100, 100, 255))
+        current = solid_png(80, 60, (100, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        assert cmp.size_mismatch is True
+        assert cmp.baseline_size == (50, 50)
+        assert cmp.current_size == (80, 60)
+
+    def test_no_size_mismatch(self):
+        baseline = solid_png(50, 50, (100, 100, 100, 255))
+        current = solid_png(50, 50, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        assert cmp.size_mismatch is False
+        assert cmp.baseline_size == (50, 50)
+        assert cmp.current_size == (50, 50)
+
+    def test_baseline_thumbnail(self):
+        baseline = solid_png(400, 800, (100, 100, 100, 255))
+        current = solid_png(400, 800, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        thumb = cmp.baseline_thumbnail(width=200)
+        assert isinstance(thumb, bytes)
+        with Image.open(io.BytesIO(thumb)) as img:
+            assert img.format == "WEBP"
+            assert img.width == 200
+
+    def test_clusters_sorted_by_pixel_count_desc(self):
+        baseline = solid_png(100, 100, (255, 255, 255, 255))
+
+        current_img = Image.new("RGBA", (100, 100), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(current_img)
+        draw.rectangle([5, 5, 7, 7], fill=(200, 0, 0, 255))      # 3x3 = 9 pixels
+        draw.rectangle([50, 50, 64, 64], fill=(0, 0, 200, 255))   # 15x15 = 225 pixels
+        out = io.BytesIO()
+        current_img.save(out, format="PNG")
+        current = out.getvalue()
+
+        cmp = Comparison(baseline, current)
+        clusters = cmp.clusters(min_pixels=1, dilation=0)
+        assert len(clusters) == 2
+        assert clusters[0].pixel_count >= clusters[1].pixel_count
+
+    def test_dilation_merges_nearby(self):
+        baseline = solid_png(100, 100, (255, 255, 255, 255))
+
+        # Two small blocks separated by 4px gap
+        current_img = Image.new("RGBA", (100, 100), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(current_img)
+        draw.rectangle([10, 50, 14, 54], fill=(200, 0, 0, 255))  # 5x5 block
+        draw.rectangle([20, 50, 24, 54], fill=(200, 0, 0, 255))  # 5x5 block, 5px gap
+        out = io.BytesIO()
+        current_img.save(out, format="PNG")
+        current = out.getvalue()
+
+        cmp = Comparison(baseline, current)
+
+        no_dilation = cmp.clusters(min_pixels=1, dilation=0)
+        assert len(no_dilation) == 2
+
+        with_dilation = cmp.clusters(min_pixels=1, dilation=4)
+        assert len(with_dilation) == 1

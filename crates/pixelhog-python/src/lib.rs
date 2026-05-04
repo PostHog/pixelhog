@@ -2,8 +2,8 @@
 
 use ::pixelhog::{
     compare_png, compare_rgba, create_thumbnail, diff_count_png, diff_count_rgba, diff_png,
-    diff_rgba, ssim_png, ssim_rgba, Comparison as RustComparison, PixelmatchOptions,
-    ThumbnailOptions,
+    diff_rgba, ssim_png, ssim_rgba, ClusterOptions, Comparison as RustComparison,
+    PixelmatchOptions, ThumbnailOptions,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -647,7 +647,7 @@ impl ClusterPy {
     }
 }
 
-#[pyclass(name = "Comparison")]
+#[pyclass(frozen, name = "Comparison")]
 struct ComparisonPy {
     inner: RustComparison,
 }
@@ -719,6 +719,21 @@ impl ComparisonPy {
         self.inner.height()
     }
 
+    #[getter]
+    fn size_mismatch(&self) -> bool {
+        self.inner.size_mismatch()
+    }
+
+    #[getter]
+    fn baseline_size(&self) -> (usize, usize) {
+        self.inner.baseline_size()
+    }
+
+    #[getter]
+    fn current_size(&self) -> (usize, usize) {
+        self.inner.current_size()
+    }
+
     /// Count differing pixels.
     #[pyo3(signature = (threshold = 0.1, include_aa = false))]
     fn diff_count(&self, py: Python<'_>, threshold: f64, include_aa: bool) -> PyResult<usize> {
@@ -747,17 +762,24 @@ impl ComparisonPy {
     }
 
     /// Compute connected-component clusters of differing pixels.
-    #[pyo3(signature = (threshold = 0.1, include_aa = false, min_cluster_size = 1))]
+    #[pyo3(signature = (threshold = 0.1, include_aa = false, min_pixels = 16, min_side = 0, dilation = 4))]
     fn clusters(
         &self,
         py: Python<'_>,
         threshold: f64,
         include_aa: bool,
-        min_cluster_size: usize,
+        min_pixels: usize,
+        min_side: usize,
+        dilation: usize,
     ) -> PyResult<Vec<Py<ClusterPy>>> {
         let options = pixelmatch_count_options(threshold, include_aa)?;
+        let cluster_opts = ClusterOptions {
+            min_pixels,
+            min_side,
+            dilation,
+        };
         let clusters = py
-            .allow_threads(|| self.inner.clusters(&options, min_cluster_size))
+            .allow_threads(|| self.inner.clusters(&options, &cluster_opts))
             .map_err(to_py_err)?;
 
         clusters
@@ -819,14 +841,28 @@ impl ComparisonPy {
 
     /// Generate a lossless WebP thumbnail of the current image.
     #[pyo3(signature = (width = 200, height = None))]
-    fn thumbnail(
+    fn current_thumbnail(
         &self,
         py: Python<'_>,
         width: usize,
         height: Option<usize>,
     ) -> PyResult<Py<PyBytes>> {
         let result = py
-            .allow_threads(|| self.inner.thumbnail(width, height))
+            .allow_threads(|| self.inner.current_thumbnail(width, height))
+            .map_err(to_py_err)?;
+        Ok(PyBytes::new(py, &result).into())
+    }
+
+    /// Generate a lossless WebP thumbnail of the baseline image.
+    #[pyo3(signature = (width = 200, height = None))]
+    fn baseline_thumbnail(
+        &self,
+        py: Python<'_>,
+        width: usize,
+        height: Option<usize>,
+    ) -> PyResult<Py<PyBytes>> {
+        let result = py
+            .allow_threads(|| self.inner.baseline_thumbnail(width, height))
             .map_err(to_py_err)?;
         Ok(PyBytes::new(py, &result).into())
     }
