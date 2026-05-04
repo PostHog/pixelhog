@@ -2,7 +2,8 @@ use approx::assert_relative_eq;
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder, ImageFormat};
 use pixelhog::{
-    compare_png, diff_count_png, diff_png, diff_rgba, ssim_png, ssim_rgba, PixelmatchOptions,
+    compare_png, diff_clusters_png, diff_count_png, diff_png, diff_rgba, ssim_png, ssim_rgba,
+    PixelmatchOptions,
 };
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
@@ -271,4 +272,76 @@ fn test_rgba_and_png_paths_match() {
 
     let (png_raw, _, _) = decode_png_rgba(&png_diff);
     assert_eq!(png_raw, rgba_diff);
+}
+
+#[test]
+fn test_clusters_two_separate_regions() {
+    // 100x100 white image with two distinct colored blocks
+    let width = 100;
+    let height = 100;
+    let baseline = solid_png(width, height, [255, 255, 255, 255]);
+
+    // Create current with two separate 10x10 blocks of red
+    let mut current_rgba = vec![255u8; width * height * 4];
+    // Block 1: top-left corner (5..15, 5..15)
+    for y in 5..15 {
+        for x in 5..15 {
+            let idx = (y * width + x) * 4;
+            current_rgba[idx] = 200; // R
+            current_rgba[idx + 1] = 0; // G
+            current_rgba[idx + 2] = 0; // B
+        }
+    }
+    // Block 2: bottom-right (80..90, 80..90)
+    for y in 80..90 {
+        for x in 80..90 {
+            let idx = (y * width + x) * 4;
+            current_rgba[idx] = 0;
+            current_rgba[idx + 1] = 0;
+            current_rgba[idx + 2] = 200;
+        }
+    }
+    let current = encode_png(&current_rgba, width, height);
+
+    let options = PixelmatchOptions::default();
+    let (diff_count, clusters, w, h) =
+        diff_clusters_png(&baseline, &current, &options, 1).expect("clusters");
+
+    assert_eq!((w, h), (width, height));
+    assert_eq!(diff_count, 200); // 2 blocks × 100 pixels
+    assert_eq!(clusters.len(), 2);
+
+    // Verify bounding boxes
+    let mut bboxes: Vec<_> = clusters.iter().map(|c| (c.bbox.x, c.bbox.y)).collect();
+    bboxes.sort();
+    assert_eq!(bboxes[0], (5, 5));
+    assert_eq!(bboxes[1], (80, 80));
+}
+
+#[test]
+fn test_clusters_count_matches_diff_count() {
+    let baseline = solid_png(50, 50, [100, 100, 100, 255]);
+    let current = solid_png(50, 50, [200, 100, 100, 255]);
+
+    let options = PixelmatchOptions::default();
+    let (count, _, _) = diff_count_png(&baseline, &current, &options).expect("count");
+    let (cluster_count, clusters, _, _) =
+        diff_clusters_png(&baseline, &current, &options, 1).expect("clusters");
+
+    assert_eq!(count, cluster_count);
+    // All pixels differ → one big cluster
+    assert_eq!(clusters.len(), 1);
+    assert_eq!(clusters[0].pixel_count, 50 * 50);
+}
+
+#[test]
+fn test_clusters_identical_images_empty() {
+    let img = solid_png(20, 20, [128, 128, 128, 255]);
+    let options = PixelmatchOptions::default();
+
+    let (diff_count, clusters, _, _) =
+        diff_clusters_png(&img, &img, &options, 1).expect("clusters");
+
+    assert_eq!(diff_count, 0);
+    assert!(clusters.is_empty());
 }

@@ -5,6 +5,9 @@ import pytest
 from PIL import Image, ImageDraw
 
 from pixelhog import (
+    BoundingBox,
+    Cluster,
+    Comparison,
     compare,
     compare_batch,
     compare_rgba,
@@ -706,3 +709,173 @@ def test_compare_thumbnail_with_height_crop() -> None:
         assert img.format == "WEBP"
         assert img.width == 200
         assert img.height == 150
+
+
+# -- Comparison object API ---------------------------------------------------
+
+
+class TestComparison:
+    def test_construction_and_properties(self):
+        baseline = solid_png(100, 80, (255, 255, 255, 255))
+        current = solid_png(100, 80, (200, 200, 200, 255))
+        cmp = Comparison(baseline, current)
+        assert cmp.width == 100
+        assert cmp.height == 80
+        assert repr(cmp) == "Comparison(100x80, 8000 pixels)"
+
+    def test_diff_count(self):
+        baseline = solid_png(50, 50, (100, 100, 100, 255))
+        current = solid_png(50, 50, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        count = cmp.diff_count()
+        assert count == 50 * 50
+
+    def test_diff_count_identical(self):
+        img = solid_png(50, 50, (100, 100, 100, 255))
+        cmp = Comparison(img, img)
+        assert cmp.diff_count() == 0
+
+    def test_diff_count_capped(self):
+        baseline = solid_png(100, 100, (100, 100, 100, 255))
+        current = solid_png(100, 100, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        capped = cmp.diff_count_capped(max_diffs=50)
+        assert capped >= 50
+        assert capped < 100 * 100
+
+    def test_ssim(self):
+        baseline = solid_png(50, 50, (100, 100, 100, 255))
+        current = solid_png(50, 50, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        score = cmp.ssim()
+        assert 0.0 <= score <= 1.0
+        assert score < 1.0
+
+    def test_ssim_identical(self):
+        img = solid_png(50, 50, (100, 100, 100, 255))
+        cmp = Comparison(img, img)
+        assert cmp.ssim() == pytest.approx(1.0)
+
+    def test_clusters(self):
+        baseline = solid_png(100, 100, (255, 255, 255, 255))
+
+        # Create current with a red block at (10,10)-(20,20)
+        current_img = Image.new("RGBA", (100, 100), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(current_img)
+        draw.rectangle([10, 10, 19, 19], fill=(200, 0, 0, 255))
+        out = io.BytesIO()
+        current_img.save(out, format="PNG")
+        current = out.getvalue()
+
+        cmp = Comparison(baseline, current)
+        clusters = cmp.clusters(min_cluster_size=1)
+
+        assert len(clusters) >= 1
+        c = clusters[0]
+        assert isinstance(c, Cluster)
+        assert c.pixel_count == 100  # 10x10 block
+        assert isinstance(c.bbox, BoundingBox)
+        assert c.bbox.x == 10
+        assert c.bbox.y == 10
+        assert c.bbox.width == 10
+        assert c.bbox.height == 10
+        assert isinstance(c.centroid, tuple)
+        assert len(c.centroid) == 2
+
+    def test_clusters_min_size_filters(self):
+        baseline = solid_png(100, 100, (255, 255, 255, 255))
+
+        # One 3x3 block (small) and one 15x15 block (large)
+        current_img = Image.new("RGBA", (100, 100), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(current_img)
+        draw.rectangle([5, 5, 7, 7], fill=(200, 0, 0, 255))      # 3x3 = 9 pixels
+        draw.rectangle([50, 50, 64, 64], fill=(0, 0, 200, 255))   # 15x15 = 225 pixels
+        out = io.BytesIO()
+        current_img.save(out, format="PNG")
+        current = out.getvalue()
+
+        cmp = Comparison(baseline, current)
+
+        all_clusters = cmp.clusters(min_cluster_size=1)
+        assert len(all_clusters) == 2
+
+        big_only = cmp.clusters(min_cluster_size=50)
+        assert len(big_only) == 1
+        assert big_only[0].pixel_count == 225
+
+    def test_diff_image(self):
+        baseline = solid_png(50, 50, (100, 100, 100, 255))
+        current = solid_png(50, 50, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        diff_png = cmp.diff_image()
+        assert isinstance(diff_png, bytes)
+        with Image.open(io.BytesIO(diff_png)) as img:
+            assert img.size == (50, 50)
+
+    def test_thumbnail(self):
+        baseline = solid_png(400, 800, (100, 100, 100, 255))
+        current = solid_png(400, 800, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        thumb = cmp.thumbnail(width=200)
+        assert isinstance(thumb, bytes)
+        with Image.open(io.BytesIO(thumb)) as img:
+            assert img.format == "WEBP"
+            assert img.width == 200
+
+    def test_thumbnail_with_height_crop(self):
+        baseline = solid_png(400, 800, (100, 100, 100, 255))
+        current = solid_png(400, 800, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        thumb = cmp.thumbnail(width=200, height=150)
+        with Image.open(io.BytesIO(thumb)) as img:
+            assert img.width == 200
+            assert img.height == 150
+
+    def test_from_rgba(self):
+        baseline_rgba = bytes([100, 100, 100, 255] * 100)
+        current_rgba = bytes([200, 100, 100, 255] * 100)
+        cmp = Comparison.from_rgba(baseline_rgba, 10, 10, current_rgba, 10, 10)
+
+        assert cmp.width == 10
+        assert cmp.height == 10
+        assert cmp.diff_count() == 100
+
+    def test_batch(self):
+        pairs = [
+            (solid_png(50, 50, (100, 100, 100, 255)), solid_png(50, 50, (200, 100, 100, 255))),
+            (solid_png(30, 30, (50, 50, 50, 255)), solid_png(30, 30, (50, 50, 50, 255))),
+        ]
+        comparisons = Comparison.batch(pairs)
+
+        assert len(comparisons) == 2
+        assert comparisons[0].diff_count() == 50 * 50
+        assert comparisons[1].diff_count() == 0
+
+    def test_matches_function_api(self):
+        baseline = solid_png(80, 60, (120, 20, 200, 255))
+        current = solid_png(80, 60, (100, 20, 200, 255))
+
+        fn_count, fn_ssim, _, _, _, _ = compare(baseline, current)
+
+        cmp = Comparison(baseline, current)
+        obj_count = cmp.diff_count()
+        obj_ssim = cmp.ssim()
+
+        assert obj_count == fn_count
+        assert obj_ssim == pytest.approx(fn_ssim, abs=1e-12)
+
+    def test_different_sizes_pads(self):
+        baseline = solid_png(50, 50, (100, 100, 100, 255))
+        current = solid_png(80, 60, (100, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        assert cmp.width == 80
+        assert cmp.height == 60
+        # Padded region is transparent vs opaque → some diffs
+        assert cmp.diff_count() > 0

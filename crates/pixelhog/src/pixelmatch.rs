@@ -1,6 +1,7 @@
 use crate::image_utils::validate_rgba_len;
 use crate::Error;
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const GOLDEN_RATIO: f64 = 1.618_033_988_749_895;
 const GOLDEN_RATIO_PLUS_ONE: f64 = 2.618_033_988_749_895;
@@ -181,6 +182,33 @@ pub fn pixelmatch_count_rgba(
     height: usize,
     options: &PixelmatchOptions,
 ) -> Result<PixelmatchCountOutput, Error> {
+    pixelmatch_count_rgba_inner(img1, img2, width, height, options, None)
+}
+
+/// Count-only pixel diff with early exit once `max_diffs` is reached.
+///
+/// Returns as soon as the diff count meets or exceeds `max_diffs`.
+/// The returned count may slightly exceed `max_diffs` due to parallel
+/// processing granularity.
+pub fn pixelmatch_count_rgba_capped(
+    img1: &[u8],
+    img2: &[u8],
+    width: usize,
+    height: usize,
+    options: &PixelmatchOptions,
+    max_diffs: usize,
+) -> Result<PixelmatchCountOutput, Error> {
+    pixelmatch_count_rgba_inner(img1, img2, width, height, options, Some(max_diffs))
+}
+
+fn pixelmatch_count_rgba_inner(
+    img1: &[u8],
+    img2: &[u8],
+    width: usize,
+    height: usize,
+    options: &PixelmatchOptions,
+    max_diffs: Option<usize>,
+) -> Result<PixelmatchCountOutput, Error> {
     validate_options(options)?;
     validate_rgba_len(img1.len(), width, height)?;
     validate_rgba_len(img2.len(), width, height)?;
@@ -201,24 +229,57 @@ pub fn pixelmatch_count_rgba(
     let b32_buf = rgba_as_u32_slice(img2);
     let a32 = a32_buf.as_slice();
     let b32 = b32_buf.as_slice();
-
     let include_aa = options.include_aa;
 
+    // Threshold=0 + no-AA fast path: any pixel with different u32 value is a diff.
+    // Skips color_delta entirely — just count mismatches.
+    if max_delta == 0.0 && !include_aa {
+        let diff_count = count_u32_mismatches(a32, b32, len, max_diffs);
+        return Ok(PixelmatchCountOutput {
+            diff_count,
+            width,
+            height,
+        });
+    }
+
     let diff_count = if len >= PARALLEL_MIN_PIXELS {
-        (0..height)
-            .into_par_iter()
-            .map(|y| {
-                process_row_count(
-                    y, img1, img2, width, height, a32, b32, max_delta, include_aa,
-                )
-            })
-            .sum()
+        match max_diffs {
+            Some(cap) => {
+                let counter = AtomicUsize::new(0);
+                (0..height)
+                    .into_par_iter()
+                    .map(|y| {
+                        if counter.load(Ordering::Relaxed) >= cap {
+                            return 0;
+                        }
+                        let row_diff = process_row_count(
+                            y, img1, img2, width, height, a32, b32, max_delta, include_aa,
+                        );
+                        counter.fetch_add(row_diff, Ordering::Relaxed);
+                        row_diff
+                    })
+                    .sum()
+            }
+            None => (0..height)
+                .into_par_iter()
+                .map(|y| {
+                    process_row_count(
+                        y, img1, img2, width, height, a32, b32, max_delta, include_aa,
+                    )
+                })
+                .sum(),
+        }
     } else {
         let mut diff = 0usize;
         for y in 0..height {
             diff += process_row_count(
                 y, img1, img2, width, height, a32, b32, max_delta, include_aa,
             );
+            if let Some(cap) = max_diffs {
+                if diff >= cap {
+                    break;
+                }
+            }
         }
         diff
     };
@@ -228,6 +289,226 @@ pub fn pixelmatch_count_rgba(
         width,
         height,
     })
+}
+
+/// Fast u32 mismatch count — processes in chunks for cache friendliness.
+fn count_u32_mismatches(a: &[u32], b: &[u32], len: usize, max_diffs: Option<usize>) -> usize {
+    if len >= PARALLEL_MIN_PIXELS {
+        match max_diffs {
+            Some(cap) => {
+                let counter = AtomicUsize::new(0);
+                a.par_chunks(PARALLEL_ROW_BLOCK * 64)
+                    .zip(b.par_chunks(PARALLEL_ROW_BLOCK * 64))
+                    .map(|(chunk_a, chunk_b)| {
+                        if counter.load(Ordering::Relaxed) >= cap {
+                            return 0;
+                        }
+                        let chunk_diff = chunk_a
+                            .iter()
+                            .zip(chunk_b.iter())
+                            .filter(|(a, b)| a != b)
+                            .count();
+                        counter.fetch_add(chunk_diff, Ordering::Relaxed);
+                        chunk_diff
+                    })
+                    .sum()
+            }
+            None => a
+                .par_chunks(PARALLEL_ROW_BLOCK * 64)
+                .zip(b.par_chunks(PARALLEL_ROW_BLOCK * 64))
+                .map(|(chunk_a, chunk_b)| {
+                    chunk_a
+                        .iter()
+                        .zip(chunk_b.iter())
+                        .filter(|(a, b)| a != b)
+                        .count()
+                })
+                .sum(),
+        }
+    } else {
+        let mut count = 0usize;
+        for (a, b) in a.iter().zip(b.iter()) {
+            if a != b {
+                count += 1;
+                if let Some(cap) = max_diffs {
+                    if count >= cap {
+                        break;
+                    }
+                }
+            }
+        }
+        count
+    }
+}
+
+/// Fast mask building — threshold=0 + no-AA means any u32 mismatch is a diff.
+fn build_mask_u32_fast(a: &[u32], b: &[u32], len: usize) -> (Vec<bool>, usize) {
+    let mut mask = vec![false; len];
+    let diff_count = if len >= PARALLEL_MIN_PIXELS {
+        let chunk_size = PARALLEL_ROW_BLOCK * 64;
+        mask.par_chunks_mut(chunk_size)
+            .enumerate()
+            .map(|(chunk_idx, chunk_mask)| {
+                let offset = chunk_idx * chunk_size;
+                let mut count = 0;
+                for (i, m) in chunk_mask.iter_mut().enumerate() {
+                    if a[offset + i] != b[offset + i] {
+                        *m = true;
+                        count += 1;
+                    }
+                }
+                count
+            })
+            .sum()
+    } else {
+        let mut count = 0;
+        for (i, (av, bv)) in a.iter().zip(b.iter()).enumerate() {
+            if av != bv {
+                mask[i] = true;
+                count += 1;
+            }
+        }
+        count
+    };
+    (mask, diff_count)
+}
+
+/// Result of a mask-producing pixel diff.
+#[derive(Debug, Clone)]
+pub struct PixelmatchMaskOutput {
+    /// Boolean mask where `true` = pixel differs beyond threshold.
+    pub diff_mask: Vec<bool>,
+    /// Number of pixels that differ beyond the threshold.
+    pub diff_count: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// Pixel diff that produces a boolean mask instead of a diff image.
+///
+/// The mask can be fed into [`crate::clusters::compute_clusters`] for
+/// connected-component analysis.
+pub fn pixelmatch_mask_rgba(
+    img1: &[u8],
+    img2: &[u8],
+    width: usize,
+    height: usize,
+    options: &PixelmatchOptions,
+) -> Result<PixelmatchMaskOutput, Error> {
+    validate_options(options)?;
+    validate_rgba_len(img1.len(), width, height)?;
+    validate_rgba_len(img2.len(), width, height)?;
+
+    let len = width.checked_mul(height).ok_or(Error::Overflow)?;
+
+    if img1 == img2 {
+        return Ok(PixelmatchMaskOutput {
+            diff_mask: vec![false; len],
+            diff_count: 0,
+            width,
+            height,
+        });
+    }
+
+    let max_delta = MAX_YIQ_DELTA * options.threshold * options.threshold;
+    let a32_buf = rgba_as_u32_slice(img1);
+    let b32_buf = rgba_as_u32_slice(img2);
+    let a32 = a32_buf.as_slice();
+    let b32 = b32_buf.as_slice();
+    let include_aa = options.include_aa;
+
+    // Threshold=0 + no-AA fast path for mask building.
+    if max_delta == 0.0 && !include_aa {
+        let (mask, diff_count) = build_mask_u32_fast(a32, b32, len);
+        return Ok(PixelmatchMaskOutput {
+            diff_mask: mask,
+            diff_count,
+            width,
+            height,
+        });
+    }
+
+    let mut mask = vec![false; len];
+
+    let diff_count = if len >= PARALLEL_MIN_PIXELS {
+        let row_stride = width;
+        mask.par_chunks_mut(row_stride)
+            .enumerate()
+            .map(|(y, row_mask)| {
+                process_row_mask(
+                    y, row_mask, img1, img2, width, height, a32, b32, max_delta, include_aa,
+                )
+            })
+            .sum()
+    } else {
+        let mut diff = 0usize;
+        for y in 0..height {
+            let row_start = y * width;
+            let row_end = row_start + width;
+            diff += process_row_mask(
+                y,
+                &mut mask[row_start..row_end],
+                img1,
+                img2,
+                width,
+                height,
+                a32,
+                b32,
+                max_delta,
+                include_aa,
+            );
+        }
+        diff
+    };
+
+    Ok(PixelmatchMaskOutput {
+        diff_mask: mask,
+        diff_count,
+        width,
+        height,
+    })
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn process_row_mask(
+    y: usize,
+    row_mask: &mut [bool],
+    img1: &[u8],
+    img2: &[u8],
+    width: usize,
+    height: usize,
+    a32: &[u32],
+    b32: &[u32],
+    max_delta: f64,
+    include_aa: bool,
+) -> usize {
+    let mut diff_count = 0usize;
+    let row_offset_pixels = y * width;
+
+    for x in 0..width {
+        let pixel_index = row_offset_pixels + x;
+        if a32[pixel_index] == b32[pixel_index] {
+            continue;
+        }
+
+        let pixel_pos = pixel_index * 4;
+        let delta = color_delta(img1, img2, pixel_pos, pixel_pos, false);
+        if delta.abs() <= max_delta {
+            continue;
+        }
+
+        let excluded_aa = !include_aa
+            && (antialiased(img1, x, y, width, height, a32, b32)
+                || antialiased(img2, x, y, width, height, b32, a32));
+
+        if !excluded_aa {
+            row_mask[x] = true;
+            diff_count += 1;
+        }
+    }
+
+    diff_count
 }
 
 #[allow(clippy::too_many_arguments)]

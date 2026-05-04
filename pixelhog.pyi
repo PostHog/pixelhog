@@ -124,9 +124,80 @@ def compare_batch(
     thumbnail_height: Optional[int] = None,
 ) -> list[CompareResult]: ...
 
+class BoundingBox:
+    @property
+    def x(self) -> int: ...
+    @property
+    def y(self) -> int: ...
+    @property
+    def width(self) -> int: ...
+    @property
+    def height(self) -> int: ...
+
+class Cluster:
+    @property
+    def bbox(self) -> BoundingBox: ...
+    @property
+    def pixel_count(self) -> int: ...
+    @property
+    def centroid(self) -> tuple[float, float]: ...
+
+class Comparison:
+    def __init__(self, baseline_png: bytes, current_png: bytes) -> None: ...
+    @staticmethod
+    def from_rgba(
+        baseline_rgba: bytes,
+        baseline_width: int,
+        baseline_height: int,
+        current_rgba: bytes,
+        current_width: int,
+        current_height: int,
+    ) -> Comparison: ...
+    @staticmethod
+    def batch(pairs: Sequence[PngPair]) -> list[Comparison]: ...
+    @property
+    def width(self) -> int: ...
+    @property
+    def height(self) -> int: ...
+    def diff_count(
+        self,
+        threshold: float = 0.1,
+        include_aa: bool = False,
+    ) -> int: ...
+    def diff_count_capped(
+        self,
+        max_diffs: int,
+        threshold: float = 0.1,
+        include_aa: bool = False,
+    ) -> int: ...
+    def ssim(self) -> float: ...
+    def clusters(
+        self,
+        threshold: float = 0.1,
+        include_aa: bool = False,
+        min_cluster_size: int = 1,
+    ) -> list[Cluster]: ...
+    def diff_image(
+        self,
+        threshold: float = 0.1,
+        alpha: float = 0.1,
+        include_aa: bool = False,
+        diff_color: tuple[int, int, int] = (255, 0, 0),
+        aa_color: tuple[int, int, int] = (255, 255, 0),
+        diff_color_alt: Optional[tuple[int, int, int]] = None,
+    ) -> bytes: ...
+    def thumbnail(
+        self,
+        width: int = 200,
+        height: Optional[int] = None,
+    ) -> bytes: ...
+
 __version__: str
 
 __all__ = [
+    "BoundingBox",
+    "Cluster",
+    "Comparison",
     "thumbnail",
     "diff",
     "diff_count",

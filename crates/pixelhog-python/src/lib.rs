@@ -2,7 +2,8 @@
 
 use ::pixelhog::{
     compare_png, compare_rgba, create_thumbnail, diff_count_png, diff_count_rgba, diff_png,
-    diff_rgba, ssim_png, ssim_rgba, PixelmatchOptions, ThumbnailOptions,
+    diff_rgba, ssim_png, ssim_rgba, Comparison as RustComparison, PixelmatchOptions,
+    ThumbnailOptions,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -602,9 +603,251 @@ fn compare_batch_py(
         .collect())
 }
 
+// -- Stateful Comparison API -------------------------------------------------
+
+#[pyclass(frozen, name = "BoundingBox")]
+struct BoundingBoxPy {
+    #[pyo3(get)]
+    x: usize,
+    #[pyo3(get)]
+    y: usize,
+    #[pyo3(get)]
+    width: usize,
+    #[pyo3(get)]
+    height: usize,
+}
+
+#[pymethods]
+impl BoundingBoxPy {
+    fn __repr__(&self) -> String {
+        format!(
+            "BoundingBox(x={}, y={}, width={}, height={})",
+            self.x, self.y, self.width, self.height
+        )
+    }
+}
+
+#[pyclass(frozen, name = "Cluster")]
+struct ClusterPy {
+    #[pyo3(get)]
+    bbox: Py<BoundingBoxPy>,
+    #[pyo3(get)]
+    pixel_count: usize,
+    #[pyo3(get)]
+    centroid: (f64, f64),
+}
+
+#[pymethods]
+impl ClusterPy {
+    fn __repr__(&self) -> String {
+        format!(
+            "Cluster(pixel_count={}, centroid=({:.1}, {:.1}))",
+            self.pixel_count, self.centroid.0, self.centroid.1
+        )
+    }
+}
+
+#[pyclass(name = "Comparison")]
+struct ComparisonPy {
+    inner: RustComparison,
+}
+
+#[pymethods]
+impl ComparisonPy {
+    /// Create a Comparison from two PNG images.
+    #[new]
+    #[pyo3(signature = (baseline_png, current_png))]
+    fn new(py: Python<'_>, baseline_png: &[u8], current_png: &[u8]) -> PyResult<Self> {
+        let inner = py
+            .allow_threads(|| RustComparison::from_png(baseline_png, current_png))
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Create a Comparison from pre-decoded RGBA buffers.
+    #[staticmethod]
+    #[pyo3(name = "from_rgba", signature = (
+        baseline_rgba, baseline_width, baseline_height,
+        current_rgba, current_width, current_height,
+    ))]
+    fn from_rgba_py(
+        py: Python<'_>,
+        baseline_rgba: &[u8],
+        baseline_width: usize,
+        baseline_height: usize,
+        current_rgba: &[u8],
+        current_width: usize,
+        current_height: usize,
+    ) -> PyResult<Self> {
+        let inner = py
+            .allow_threads(|| {
+                RustComparison::from_rgba(
+                    baseline_rgba,
+                    baseline_width,
+                    baseline_height,
+                    current_rgba,
+                    current_width,
+                    current_height,
+                )
+            })
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Decode multiple PNG pairs in parallel.
+    #[staticmethod]
+    #[pyo3(signature = (pairs,))]
+    fn batch(py: Python<'_>, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<Vec<Self>> {
+        let results = py
+            .allow_threads(|| {
+                pairs
+                    .into_par_iter()
+                    .map(|(b, c)| RustComparison::from_png(&b, &c))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(to_py_err)?;
+        Ok(results.into_iter().map(|inner| Self { inner }).collect())
+    }
+
+    #[getter]
+    fn width(&self) -> usize {
+        self.inner.width()
+    }
+
+    #[getter]
+    fn height(&self) -> usize {
+        self.inner.height()
+    }
+
+    /// Count differing pixels.
+    #[pyo3(signature = (threshold = 0.1, include_aa = false))]
+    fn diff_count(&self, py: Python<'_>, threshold: f64, include_aa: bool) -> PyResult<usize> {
+        let options = pixelmatch_count_options(threshold, include_aa)?;
+        py.allow_threads(|| self.inner.diff_count(&options))
+            .map_err(to_py_err)
+    }
+
+    /// Count differing pixels with early exit.
+    #[pyo3(signature = (max_diffs, threshold = 0.1, include_aa = false))]
+    fn diff_count_capped(
+        &self,
+        py: Python<'_>,
+        max_diffs: usize,
+        threshold: f64,
+        include_aa: bool,
+    ) -> PyResult<usize> {
+        let options = pixelmatch_count_options(threshold, include_aa)?;
+        py.allow_threads(|| self.inner.diff_count_capped(&options, max_diffs))
+            .map_err(to_py_err)
+    }
+
+    /// Compute SSIM (structural similarity) score.
+    fn ssim(&self, py: Python<'_>) -> PyResult<f64> {
+        py.allow_threads(|| self.inner.ssim()).map_err(to_py_err)
+    }
+
+    /// Compute connected-component clusters of differing pixels.
+    #[pyo3(signature = (threshold = 0.1, include_aa = false, min_cluster_size = 1))]
+    fn clusters(
+        &self,
+        py: Python<'_>,
+        threshold: f64,
+        include_aa: bool,
+        min_cluster_size: usize,
+    ) -> PyResult<Vec<Py<ClusterPy>>> {
+        let options = pixelmatch_count_options(threshold, include_aa)?;
+        let clusters = py
+            .allow_threads(|| self.inner.clusters(&options, min_cluster_size))
+            .map_err(to_py_err)?;
+
+        clusters
+            .into_iter()
+            .map(|c| {
+                let bbox = Py::new(
+                    py,
+                    BoundingBoxPy {
+                        x: c.bbox.x,
+                        y: c.bbox.y,
+                        width: c.bbox.width,
+                        height: c.bbox.height,
+                    },
+                )?;
+                Py::new(
+                    py,
+                    ClusterPy {
+                        bbox,
+                        pixel_count: c.pixel_count,
+                        centroid: c.centroid,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Generate the diff image as PNG bytes.
+    #[pyo3(signature = (
+        threshold = 0.1,
+        alpha = 0.1,
+        include_aa = false,
+        diff_color = (255, 0, 0),
+        aa_color = (255, 255, 0),
+        diff_color_alt = None,
+    ))]
+    fn diff_image(
+        &self,
+        py: Python<'_>,
+        threshold: f64,
+        alpha: f64,
+        include_aa: bool,
+        diff_color: (u8, u8, u8),
+        aa_color: (u8, u8, u8),
+        diff_color_alt: Option<(u8, u8, u8)>,
+    ) -> PyResult<Py<PyBytes>> {
+        let options = pixelmatch_options(
+            threshold,
+            alpha,
+            include_aa,
+            diff_color,
+            aa_color,
+            diff_color_alt,
+        )?;
+        let png = py
+            .allow_threads(|| self.inner.diff_image_png(&options))
+            .map_err(to_py_err)?;
+        Ok(PyBytes::new(py, &png).into())
+    }
+
+    /// Generate a lossless WebP thumbnail of the current image.
+    #[pyo3(signature = (width = 200, height = None))]
+    fn thumbnail(
+        &self,
+        py: Python<'_>,
+        width: usize,
+        height: Option<usize>,
+    ) -> PyResult<Py<PyBytes>> {
+        let result = py
+            .allow_threads(|| self.inner.thumbnail(width, height))
+            .map_err(to_py_err)?;
+        Ok(PyBytes::new(py, &result).into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Comparison({}x{}, {} pixels)",
+            self.inner.width(),
+            self.inner.height(),
+            self.inner.width() * self.inner.height()
+        )
+    }
+}
+
 #[pymodule]
 fn pixelhog(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
+    m.add_class::<ComparisonPy>()?;
+    m.add_class::<ClusterPy>()?;
+    m.add_class::<BoundingBoxPy>()?;
 
     m.add_function(wrap_pyfunction!(thumbnail_py, m)?)?;
     m.add_function(wrap_pyfunction!(diff_py, m)?)?;
