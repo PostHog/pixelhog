@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 from pixelhog import (
     BoundingBox,
     Cluster,
+    ClustersResult,
     Comparison,
     compare,
     compare_batch,
@@ -771,10 +772,13 @@ class TestComparison:
         current = out.getvalue()
 
         cmp = Comparison(baseline, current)
-        clusters = cmp.clusters(min_pixels=1, dilation=0)
+        result = cmp.clusters(min_pixels=1, dilation=0)
 
-        assert len(clusters) >= 1
-        c = clusters[0]
+        assert isinstance(result, ClustersResult)
+        assert len(result.clusters) >= 1
+        assert result.total_clusters >= 1
+        assert result.truncated is False
+        c = result.clusters[0]
         assert isinstance(c, Cluster)
         assert c.pixel_count == 100  # 10x10 block
         assert isinstance(c.bbox, BoundingBox)
@@ -799,12 +803,12 @@ class TestComparison:
 
         cmp = Comparison(baseline, current)
 
-        all_clusters = cmp.clusters(min_pixels=1, dilation=0)
-        assert len(all_clusters) == 2
+        all_result = cmp.clusters(min_pixels=1, dilation=0)
+        assert len(all_result.clusters) == 2
 
-        big_only = cmp.clusters(min_pixels=50, dilation=0)
-        assert len(big_only) == 1
-        assert big_only[0].pixel_count == 225
+        big_result = cmp.clusters(min_pixels=50, dilation=0)
+        assert len(big_result.clusters) == 1
+        assert big_result.clusters[0].pixel_count == 225
 
     def test_diff_image(self):
         baseline = solid_png(50, 50, (100, 100, 100, 255))
@@ -920,9 +924,9 @@ class TestComparison:
         current = out.getvalue()
 
         cmp = Comparison(baseline, current)
-        clusters = cmp.clusters(min_pixels=1, dilation=0)
-        assert len(clusters) == 2
-        assert clusters[0].pixel_count >= clusters[1].pixel_count
+        result = cmp.clusters(min_pixels=1, dilation=0)
+        assert len(result.clusters) == 2
+        assert result.clusters[0].pixel_count >= result.clusters[1].pixel_count
 
     def test_dilation_merges_nearby(self):
         baseline = solid_png(100, 100, (255, 255, 255, 255))
@@ -939,7 +943,31 @@ class TestComparison:
         cmp = Comparison(baseline, current)
 
         no_dilation = cmp.clusters(min_pixels=1, dilation=0)
-        assert len(no_dilation) == 2
+        assert len(no_dilation.clusters) == 2
 
         with_dilation = cmp.clusters(min_pixels=1, dilation=4)
-        assert len(with_dilation) == 1
+        assert len(with_dilation.clusters) == 1
+
+    def test_max_clusters_truncates(self):
+        baseline = solid_png(100, 100, (255, 255, 255, 255))
+
+        # Create 3 well-separated blocks
+        current_img = Image.new("RGBA", (100, 100), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(current_img)
+        draw.rectangle([5, 5, 9, 9], fill=(200, 0, 0, 255))
+        draw.rectangle([50, 5, 54, 9], fill=(0, 200, 0, 255))
+        draw.rectangle([5, 50, 9, 54], fill=(0, 0, 200, 255))
+        out = io.BytesIO()
+        current_img.save(out, format="PNG")
+        current = out.getvalue()
+
+        cmp = Comparison(baseline, current)
+
+        all_result = cmp.clusters(min_pixels=1, dilation=0)
+        assert all_result.total_clusters == 3
+        assert all_result.truncated is False
+
+        capped = cmp.clusters(min_pixels=1, dilation=0, max_clusters=2)
+        assert len(capped.clusters) == 2
+        assert capped.total_clusters == 3
+        assert capped.truncated is True

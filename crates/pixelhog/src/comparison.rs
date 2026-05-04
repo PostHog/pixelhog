@@ -1,4 +1,4 @@
-use crate::clusters::{compute_clusters, ClusterOptions, DiffCluster};
+use crate::clusters::{compute_clusters, ClusterOptions, ClustersOutput};
 use crate::image_utils::{decode_png_rgba, encode_png, pad_images_to_largest_cow, thumbnail_webp};
 use crate::pixelmatch::{
     pixelmatch_count_rgba, pixelmatch_count_rgba_capped, pixelmatch_mask_rgba, pixelmatch_rgba,
@@ -156,7 +156,7 @@ impl Comparison {
         &self,
         options: &PixelmatchOptions,
         cluster_options: &ClusterOptions,
-    ) -> Result<Vec<DiffCluster>, Error> {
+    ) -> Result<ClustersOutput, Error> {
         let mask_output = pixelmatch_mask_rgba(
             &self.baseline_rgba,
             &self.current_rgba,

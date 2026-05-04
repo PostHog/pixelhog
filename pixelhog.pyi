@@ -142,6 +142,15 @@ class Cluster:
     @property
     def centroid(self) -> tuple[float, float]: ...
 
+class ClustersResult:
+    @property
+    def clusters(self) -> list[Cluster]: ...
+    @property
+    def total_clusters(self) -> int: ...
+    @property
+    def truncated(self) -> bool: ...
+    def __len__(self) -> int: ...
+
 class Comparison:
     def __init__(self, baseline_png: bytes, current_png: bytes) -> None: ...
     @staticmethod
@@ -184,7 +193,8 @@ class Comparison:
         min_pixels: int = 16,
         min_side: int = 0,
         dilation: int = 4,
-    ) -> list[Cluster]: ...
+        max_clusters: Optional[int] = None,
+    ) -> ClustersResult: ...
     def diff_image(
         self,
         threshold: float = 0.1,
@@ -210,6 +220,7 @@ __version__: str
 __all__ = [
     "BoundingBox",
     "Cluster",
+    "ClustersResult",
     "Comparison",
     "thumbnail",
     "diff",

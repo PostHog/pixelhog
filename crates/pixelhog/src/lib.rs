@@ -20,7 +20,7 @@ use pixelmatch::{pixelmatch_count_rgba, pixelmatch_mask_rgba, pixelmatch_rgba};
 use rayon::join;
 use ssim::compute_ssim_rgba;
 
-pub use clusters::{BoundingBox, ClusterOptions, DiffCluster};
+pub use clusters::{BoundingBox, ClusterOptions, ClustersOutput, DiffCluster};
 pub use comparison::Comparison;
 pub use error::Error;
 pub use pixelmatch::pixelmatch_count_rgba_capped;
@@ -371,7 +371,7 @@ pub fn diff_clusters_png(
     current_png: &[u8],
     options: &PixelmatchOptions,
     cluster_options: &ClusterOptions,
-) -> Result<(usize, Vec<DiffCluster>, usize, usize), Error> {
+) -> Result<(usize, ClustersOutput, usize, usize), Error> {
     let (
         (baseline_rgba, baseline_width, baseline_height),
         (current_rgba, current_width, current_height),
@@ -400,7 +400,7 @@ pub fn diff_clusters_rgba(
     current_height: usize,
     options: &PixelmatchOptions,
     cluster_options: &ClusterOptions,
-) -> Result<(usize, Vec<DiffCluster>, usize, usize), Error> {
+) -> Result<(usize, ClustersOutput, usize, usize), Error> {
     let (baseline_padded, current_padded, width, height) = pad_images_to_largest_cow(
         baseline_rgba,
         baseline_width,
@@ -418,9 +418,9 @@ pub fn diff_clusters_rgba(
         options,
     )?;
 
-    let clusters = compute_clusters(&mask_output.diff_mask, width, height, cluster_options);
+    let cluster_output = compute_clusters(&mask_output.diff_mask, width, height, cluster_options);
 
-    Ok((mask_output.diff_count, clusters, width, height))
+    Ok((mask_output.diff_count, cluster_output, width, height))
 }
 
 /// Create a lossless WebP thumbnail from PNG bytes.

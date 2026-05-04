@@ -304,24 +304,24 @@ fn test_clusters_two_separate_regions() {
     let current = encode_png(&current_rgba, width, height);
 
     let options = PixelmatchOptions::default();
-    let (diff_count, clusters, w, h) = diff_clusters_png(
-        &baseline,
-        &current,
-        &options,
-        &ClusterOptions {
-            min_pixels: 1,
-            min_side: 0,
-            dilation: 0,
-        },
-    )
-    .expect("clusters");
+    let raw_opts = ClusterOptions {
+        min_pixels: 1,
+        min_side: 0,
+        dilation: 0,
+        max_clusters: None,
+    };
+    let (diff_count, cluster_output, w, h) =
+        diff_clusters_png(&baseline, &current, &options, &raw_opts).expect("clusters");
 
     assert_eq!((w, h), (width, height));
-    assert_eq!(diff_count, 200); // 2 blocks × 100 pixels
-    assert_eq!(clusters.len(), 2);
+    assert_eq!(diff_count, 200);
+    assert_eq!(cluster_output.clusters.len(), 2);
 
-    // Verify bounding boxes
-    let mut bboxes: Vec<_> = clusters.iter().map(|c| (c.bbox.x, c.bbox.y)).collect();
+    let mut bboxes: Vec<_> = cluster_output
+        .clusters
+        .iter()
+        .map(|c| (c.bbox.x, c.bbox.y))
+        .collect();
     bboxes.sort();
     assert_eq!(bboxes[0], (5, 5));
     assert_eq!(bboxes[1], (80, 80));
@@ -333,42 +333,35 @@ fn test_clusters_count_matches_diff_count() {
     let current = solid_png(50, 50, [200, 100, 100, 255]);
 
     let options = PixelmatchOptions::default();
+    let raw_opts = ClusterOptions {
+        min_pixels: 1,
+        min_side: 0,
+        dilation: 0,
+        max_clusters: None,
+    };
     let (count, _, _) = diff_count_png(&baseline, &current, &options).expect("count");
-    let (cluster_count, clusters, _, _) = diff_clusters_png(
-        &baseline,
-        &current,
-        &options,
-        &ClusterOptions {
-            min_pixels: 1,
-            min_side: 0,
-            dilation: 0,
-        },
-    )
-    .expect("clusters");
+    let (cluster_count, cluster_output, _, _) =
+        diff_clusters_png(&baseline, &current, &options, &raw_opts).expect("clusters");
 
     assert_eq!(count, cluster_count);
-    // All pixels differ → one big cluster
-    assert_eq!(clusters.len(), 1);
-    assert_eq!(clusters[0].pixel_count, 50 * 50);
+    assert_eq!(cluster_output.clusters.len(), 1);
+    assert_eq!(cluster_output.clusters[0].pixel_count, 50 * 50);
 }
 
 #[test]
 fn test_clusters_identical_images_empty() {
     let img = solid_png(20, 20, [128, 128, 128, 255]);
     let options = PixelmatchOptions::default();
+    let raw_opts = ClusterOptions {
+        min_pixels: 1,
+        min_side: 0,
+        dilation: 0,
+        max_clusters: None,
+    };
 
-    let (diff_count, clusters, _, _) = diff_clusters_png(
-        &img,
-        &img,
-        &options,
-        &ClusterOptions {
-            min_pixels: 1,
-            min_side: 0,
-            dilation: 0,
-        },
-    )
-    .expect("clusters");
+    let (diff_count, cluster_output, _, _) =
+        diff_clusters_png(&img, &img, &options, &raw_opts).expect("clusters");
 
     assert_eq!(diff_count, 0);
-    assert!(clusters.is_empty());
+    assert!(cluster_output.clusters.is_empty());
 }

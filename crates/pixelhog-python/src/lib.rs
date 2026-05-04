@@ -647,6 +647,38 @@ impl ClusterPy {
     }
 }
 
+#[pyclass(frozen, name = "ClustersResult")]
+struct ClustersResultPy {
+    #[pyo3(get)]
+    clusters: Vec<Py<ClusterPy>>,
+    #[pyo3(get)]
+    total_clusters: usize,
+}
+
+#[pymethods]
+impl ClustersResultPy {
+    #[getter]
+    fn truncated(&self) -> bool {
+        self.clusters.len() < self.total_clusters
+    }
+
+    fn __repr__(&self) -> String {
+        if self.clusters.len() < self.total_clusters {
+            format!(
+                "ClustersResult({} of {}, truncated)",
+                self.clusters.len(),
+                self.total_clusters
+            )
+        } else {
+            format!("ClustersResult({})", self.total_clusters)
+        }
+    }
+
+    fn __len__(&self) -> usize {
+        self.clusters.len()
+    }
+}
+
 #[pyclass(frozen, name = "Comparison")]
 struct ComparisonPy {
     inner: RustComparison,
@@ -762,7 +794,7 @@ impl ComparisonPy {
     }
 
     /// Compute connected-component clusters of differing pixels.
-    #[pyo3(signature = (threshold = 0.1, include_aa = false, min_pixels = 16, min_side = 0, dilation = 4))]
+    #[pyo3(signature = (threshold = 0.1, include_aa = false, min_pixels = 16, min_side = 0, dilation = 4, max_clusters = None))]
     fn clusters(
         &self,
         py: Python<'_>,
@@ -771,18 +803,21 @@ impl ComparisonPy {
         min_pixels: usize,
         min_side: usize,
         dilation: usize,
-    ) -> PyResult<Vec<Py<ClusterPy>>> {
+        max_clusters: Option<usize>,
+    ) -> PyResult<Py<ClustersResultPy>> {
         let options = pixelmatch_count_options(threshold, include_aa)?;
         let cluster_opts = ClusterOptions {
             min_pixels,
             min_side,
             dilation,
+            max_clusters,
         };
-        let clusters = py
+        let output = py
             .allow_threads(|| self.inner.clusters(&options, &cluster_opts))
             .map_err(to_py_err)?;
 
-        clusters
+        let clusters: PyResult<Vec<Py<ClusterPy>>> = output
+            .clusters
             .into_iter()
             .map(|c| {
                 let bbox = Py::new(
@@ -803,7 +838,15 @@ impl ComparisonPy {
                     },
                 )
             })
-            .collect()
+            .collect();
+
+        Py::new(
+            py,
+            ClustersResultPy {
+                clusters: clusters?,
+                total_clusters: output.total_clusters,
+            },
+        )
     }
 
     /// Generate the diff image as PNG bytes.
@@ -882,6 +925,7 @@ fn pixelhog(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
 
     m.add_class::<ComparisonPy>()?;
+    m.add_class::<ClustersResultPy>()?;
     m.add_class::<ClusterPy>()?;
     m.add_class::<BoundingBoxPy>()?;
 
