@@ -1,5 +1,7 @@
 use crate::clusters::{compute_clusters, ClusterOptions, ClustersOutput};
-use crate::image_utils::{decode_png_rgba, encode_png, pad_images_to_largest_cow, thumbnail_webp};
+use crate::image_utils::{
+    decode_png_rgba, encode_png, pad_images_to_largest_cow, thumbnail_webp_full,
+};
 use crate::pixelmatch::{
     pixelmatch_count_rgba, pixelmatch_count_rgba_capped, pixelmatch_mask_rgba, pixelmatch_rgba,
     PixelmatchOptions, PixelmatchOutput,
@@ -191,16 +193,20 @@ impl Comparison {
     ///
     /// Uses the original (pre-padding) image so the thumbnail has the
     /// correct aspect ratio even when images were different sizes.
+    /// When proportional scaling would make either dimension smaller than
+    /// `min_width`/`min_height`, the original is top-left cropped instead.
     pub fn current_thumbnail(
         &self,
         max_width: usize,
         max_height: Option<usize>,
+        min_width: Option<usize>,
+        min_height: Option<usize>,
     ) -> Result<Vec<u8>, Error> {
         let (rgba, w, h) = match &self.current_original {
             Some(orig) => (orig.as_slice(), self.current_width, self.current_height),
             None => (self.current_rgba.as_slice(), self.width, self.height),
         };
-        thumbnail_webp(rgba, w, h, max_width, max_height)
+        thumbnail_webp_full(rgba, w, h, max_width, max_height, min_width, min_height)
     }
 
     /// Generate a lossless WebP thumbnail of the baseline image.
@@ -208,11 +214,13 @@ impl Comparison {
         &self,
         max_width: usize,
         max_height: Option<usize>,
+        min_width: Option<usize>,
+        min_height: Option<usize>,
     ) -> Result<Vec<u8>, Error> {
         let (rgba, w, h) = match &self.baseline_original {
             Some(orig) => (orig.as_slice(), self.baseline_width, self.baseline_height),
             None => (self.baseline_rgba.as_slice(), self.width, self.height),
         };
-        thumbnail_webp(rgba, w, h, max_width, max_height)
+        thumbnail_webp_full(rgba, w, h, max_width, max_height, min_width, min_height)
     }
 }

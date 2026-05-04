@@ -841,6 +841,34 @@ class TestComparison:
             assert img.width == 200
             assert img.height == 150
 
+    def test_thumbnail_extreme_wide_with_min_height(self):
+        """A 1065x30 tab bar at max_width=200 would be 200x6 without min_height."""
+        baseline = solid_png(1065, 30, (100, 100, 100, 255))
+        current = solid_png(1065, 30, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        # Without min_height: proportional scaling gives a tiny result
+        small_thumb = cmp.current_thumbnail(width=200)
+        with Image.open(io.BytesIO(small_thumb)) as img:
+            assert img.height < 10  # ~6px, useless
+
+        # With min_height: top-left crops the original instead
+        good_thumb = cmp.current_thumbnail(width=200, min_height=20)
+        with Image.open(io.BytesIO(good_thumb)) as img:
+            assert img.height == 30  # full height preserved
+            assert img.width == 200  # cropped to max_width
+
+    def test_thumbnail_extreme_tall_with_min_width(self):
+        """A 30x1065 narrow sidebar at max_height=200 would be 6x200 without min_width."""
+        baseline = solid_png(30, 1065, (100, 100, 100, 255))
+        current = solid_png(30, 1065, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        good_thumb = cmp.current_thumbnail(width=200, height=200, min_width=20)
+        with Image.open(io.BytesIO(good_thumb)) as img:
+            assert img.width == 30  # full width preserved
+            assert img.height == 200  # cropped to max_height
+
     def test_from_rgba(self):
         baseline_rgba = bytes([100, 100, 100, 255] * 100)
         current_rgba = bytes([200, 100, 100, 255] * 100)

@@ -208,11 +208,15 @@ class Comparison:
         self,
         width: int = 200,
         height: Optional[int] = None,
+        min_width: Optional[int] = None,
+        min_height: Optional[int] = None,
     ) -> bytes: ...
     def baseline_thumbnail(
         self,
         width: int = 200,
         height: Optional[int] = None,
+        min_width: Optional[int] = None,
+        min_height: Optional[int] = None,
     ) -> bytes: ...
 
 __version__: str

@@ -65,6 +65,8 @@ fn thumbnail_options(
     thumbnail_width.map(|max_width| ThumbnailOptions {
         max_width,
         max_height: thumbnail_height,
+        min_width: None,
+        min_height: None,
     })
 }
 
@@ -883,29 +885,42 @@ impl ComparisonPy {
     }
 
     /// Generate a lossless WebP thumbnail of the current image.
-    #[pyo3(signature = (width = 200, height = None))]
+    ///
+    /// When scaling would make either dimension smaller than `min_width` /
+    /// `min_height`, the original is top-left cropped instead (no upscaling).
+    #[pyo3(signature = (width = 200, height = None, min_width = None, min_height = None))]
     fn current_thumbnail(
         &self,
         py: Python<'_>,
         width: usize,
         height: Option<usize>,
+        min_width: Option<usize>,
+        min_height: Option<usize>,
     ) -> PyResult<Py<PyBytes>> {
         let result = py
-            .allow_threads(|| self.inner.current_thumbnail(width, height))
+            .allow_threads(|| {
+                self.inner
+                    .current_thumbnail(width, height, min_width, min_height)
+            })
             .map_err(to_py_err)?;
         Ok(PyBytes::new(py, &result).into())
     }
 
     /// Generate a lossless WebP thumbnail of the baseline image.
-    #[pyo3(signature = (width = 200, height = None))]
+    #[pyo3(signature = (width = 200, height = None, min_width = None, min_height = None))]
     fn baseline_thumbnail(
         &self,
         py: Python<'_>,
         width: usize,
         height: Option<usize>,
+        min_width: Option<usize>,
+        min_height: Option<usize>,
     ) -> PyResult<Py<PyBytes>> {
         let result = py
-            .allow_threads(|| self.inner.baseline_thumbnail(width, height))
+            .allow_threads(|| {
+                self.inner
+                    .baseline_thumbnail(width, height, min_width, min_height)
+            })
             .map_err(to_py_err)?;
         Ok(PyBytes::new(py, &result).into())
     }

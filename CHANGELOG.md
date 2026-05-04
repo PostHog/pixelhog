@@ -23,6 +23,12 @@ and `current_size` properties so callers can detect padding artifacts. Exposed a
 `#[pyclass]` with proper `BoundingBox` and `Cluster` result types. Old function-based API
 stays untouched.
 
+**Smarter thumbnails for extreme aspect ratios.** `current_thumbnail()` and
+`baseline_thumbnail()` accept `min_width` / `min_height` floors. When proportional scaling
+would produce a result smaller than the floor (e.g. a 1065×30 tab bar → 200×6), the original
+is top-left cropped instead of scaled down. No upscaling. Existing callers are unaffected —
+floors default to `None`.
+
 **Expanded benchmarks.** 9 groups covering 2.1M / 2.5M / 18M pixel images across count-only,
 diff image, SSIM, compare, clusters, early exit, identical, and small-diff scenarios.
 

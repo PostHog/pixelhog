@@ -43,6 +43,8 @@ pub type CompareRgbaOutput = (Option<Vec<u8>>, usize, f64, usize, usize, Option<
 pub struct ThumbnailOptions {
     pub max_width: usize,
     pub max_height: Option<usize>,
+    pub min_width: Option<usize>,
+    pub min_height: Option<usize>,
 }
 
 type DecodedImage = (Vec<u8>, usize, usize);

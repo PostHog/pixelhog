@@ -85,14 +85,38 @@ fn encode_webp_lossless(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, 
 
 /// Resize RGBA bytes to a lossless WebP thumbnail.
 ///
-/// Constrains to `max_width`. If `max_height` is set, crops from the top
-/// after resizing. Images already within bounds are re-encoded as-is.
+/// Uses bounding-box contain with minimum dimension floors:
+/// 1. Scale to fit within `max_width × max_height` (contain)
+/// 2. If either dimension would fall below `min_width` / `min_height`,
+///    skip resize and top-left crop the original instead
+/// 3. Images already within bounds are re-encoded as-is
+///
+/// Top-left crop preserves the most informative region of screenshots.
 pub fn thumbnail_webp(
     rgba: &[u8],
     width: usize,
     height: usize,
     max_width: usize,
     max_height: Option<usize>,
+) -> Result<Vec<u8>, Error> {
+    thumbnail_webp_full(rgba, width, height, max_width, max_height, None, None)
+}
+
+/// Full thumbnail generation with minimum dimension floors.
+///
+/// Algorithm: scale to `max_width`, crop to `max_height` from top-left.
+/// If the result would be smaller than `min_width` or `min_height`,
+/// skip the resize and top-left crop the original instead.
+/// No upscaling ever happens.
+#[allow(clippy::too_many_arguments)]
+pub fn thumbnail_webp_full(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    max_width: usize,
+    max_height: Option<usize>,
+    min_width: Option<usize>,
+    min_height: Option<usize>,
 ) -> Result<Vec<u8>, Error> {
     validate_rgba_len(rgba.len(), width, height)?;
 
@@ -109,6 +133,11 @@ pub fn thumbnail_webp(
         return encode_webp_lossless(&rgb, w, h);
     }
 
+    let effective_max_h = max_height.unwrap_or(usize::MAX);
+    let effective_min_w = min_width.unwrap_or(0);
+    let effective_min_h = min_height.unwrap_or(0);
+
+    // Scale to max_width (preserve aspect ratio, never upscale).
     let (scaled_w, scaled_h) = if width <= max_width {
         (width, height)
     } else {
@@ -116,23 +145,46 @@ pub fn thumbnail_webp(
         (max_width, new_h.max(1))
     };
 
+    // Check if scaling would violate minimum dimension floors.
+    if scaled_w < effective_min_w || scaled_h < effective_min_h {
+        // Skip resize, top-left crop the original.
+        let crop_w = width.min(max_width);
+        let crop_h = height.min(effective_max_h);
+        let cropped = top_left_crop(rgba, width, crop_w, crop_h);
+        let (w32, h32) = to_u32_dims(crop_w, crop_h)?;
+        let rgb = rgba_to_rgb(&cropped);
+        return encode_webp_lossless(&rgb, w32, h32);
+    }
+
+    // Resize.
     let resized = if scaled_w == width && scaled_h == height {
         rgba.to_vec()
     } else {
         resize_rgba(rgba, width, height, scaled_w, scaled_h)?
     };
 
-    let (final_rgba, final_w, final_h) = match max_height {
-        Some(mh) if scaled_h > mh => {
-            let cropped_len = scaled_w * mh * 4;
-            (resized[..cropped_len].to_vec(), scaled_w, mh)
-        }
-        _ => (resized, scaled_w, scaled_h),
+    // Crop to max_height from top-left if needed.
+    let (final_rgba, final_w, final_h) = if scaled_h > effective_max_h {
+        let cropped = top_left_crop(&resized, scaled_w, scaled_w, effective_max_h);
+        (cropped, scaled_w, effective_max_h)
+    } else {
+        (resized, scaled_w, scaled_h)
     };
 
     let (w32, h32) = to_u32_dims(final_w, final_h)?;
     let rgb = rgba_to_rgb(&final_rgba);
     encode_webp_lossless(&rgb, w32, h32)
+}
+
+fn top_left_crop(rgba: &[u8], src_width: usize, crop_w: usize, crop_h: usize) -> Vec<u8> {
+    let src_stride = src_width * 4;
+    let dst_stride = crop_w * 4;
+    let mut out = Vec::with_capacity(crop_w * crop_h * 4);
+    for row in 0..crop_h {
+        let src_start = row * src_stride;
+        out.extend_from_slice(&rgba[src_start..src_start + dst_stride]);
+    }
+    out
 }
 
 /// Pad two RGBA images to matching dimensions using transparent pixels.
