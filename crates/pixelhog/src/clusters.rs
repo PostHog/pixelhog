@@ -153,7 +153,7 @@ fn merge_aligned_clusters(clusters: &mut Vec<DiffCluster>, max_gap: usize, min_o
             break;
         }
     }
-    clusters.sort_by(|a, b| b.pixel_count.cmp(&a.pixel_count));
+    clusters.sort_by_key(|c| std::cmp::Reverse(c.pixel_count));
 }
 
 /// Compute connected-component clusters from a binary diff mask.
@@ -277,7 +277,7 @@ pub fn compute_clusters(
         .filter(|c| min_side == 0 || c.bbox.width.min(c.bbox.height) >= min_side)
         .collect();
 
-    clusters.sort_by(|a, b| b.pixel_count.cmp(&a.pixel_count));
+    clusters.sort_by_key(|c| std::cmp::Reverse(c.pixel_count));
 
     let total_clusters = clusters.len();
     let truncated = options.max_clusters.is_some_and(|max| total_clusters > max);
