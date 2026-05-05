@@ -26,8 +26,12 @@ exposes individual methods: `diff_count()`, `ssim()`, `clusters()`, `diff_image(
 `current_thumbnail()`, `baseline_thumbnail()`, `diff_count_capped()`. Also available via
 `Comparison.from_rgba()` and `Comparison.batch()`. Exposes `size_mismatch`, `baseline_size`,
 and `current_size` properties so callers can detect padding artifacts. Exposed as frozen
-`#[pyclass]` with proper `BoundingBox` and `Cluster` result types. Old function-based API
-stays untouched.
+`#[pyclass]` with proper `BoundingBox` and `Cluster` result types.
+
+**Breaking: standalone paired-image functions removed.** `diff`, `diff_count`, `ssim`,
+`compare`, and their `_rgba` variants are gone. Use `Comparison(a, b).method(...)` instead —
+same functionality, no redundant decode. Batch APIs (`diff_batch`, `compare_batch`, etc.) and
+`thumbnail` remain as standalone functions.
 
 **Smarter thumbnails for extreme aspect ratios.** `current_thumbnail()` and
 `baseline_thumbnail()` accept `min_width` / `min_height` floors. When proportional scaling
