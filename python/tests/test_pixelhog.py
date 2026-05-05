@@ -999,3 +999,45 @@ class TestComparison:
         assert len(capped.clusters) == 2
         assert capped.total_clusters == 3
         assert capped.truncated is True
+
+    def test_aligned_merge_collapses_list_rows(self):
+        """Vertically stacked rows with same x-extent merge into one cluster."""
+        baseline = solid_png(200, 200, (255, 255, 255, 255))
+
+        current_img = Image.new("RGBA", (200, 200), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(current_img)
+        # 5 rows, same x range, separated by ~30px gaps
+        for row in range(5):
+            y_start = 10 + row * 35
+            draw.rectangle([20, y_start, 180, y_start + 10], fill=(200, 0, 0, 255))
+        out = io.BytesIO()
+        current_img.save(out, format="PNG")
+        current = out.getvalue()
+
+        cmp = Comparison(baseline, current)
+
+        # Without merge: 5 clusters.
+        no_merge = cmp.clusters(min_pixels=1, dilation=0, merge_gap=0)
+        assert len(no_merge.clusters) == 5
+
+        # With merge (gap=30, overlap=0.5): collapses to 1.
+        merged = cmp.clusters(min_pixels=1, dilation=0, merge_gap=30, merge_overlap=0.5)
+        assert len(merged.clusters) == 1
+        assert merged.clusters[0].merged_from == 5
+
+    def test_aligned_merge_does_not_merge_unrelated_regions(self):
+        """Clusters at opposite corners with no axis alignment stay separate."""
+        baseline = solid_png(200, 200, (255, 255, 255, 255))
+
+        current_img = Image.new("RGBA", (200, 200), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(current_img)
+        draw.rectangle([5, 5, 25, 25], fill=(200, 0, 0, 255))
+        draw.rectangle([170, 170, 195, 195], fill=(0, 200, 0, 255))
+        out = io.BytesIO()
+        current_img.save(out, format="PNG")
+        current = out.getvalue()
+
+        cmp = Comparison(baseline, current)
+        merged = cmp.clusters(min_pixels=1, dilation=0, merge_gap=60, merge_overlap=0.5)
+        assert len(merged.clusters) == 2
+        assert all(c.merged_from == 1 for c in merged.clusters)

@@ -637,14 +637,16 @@ struct ClusterPy {
     pixel_count: usize,
     #[pyo3(get)]
     centroid: (f64, f64),
+    #[pyo3(get)]
+    merged_from: usize,
 }
 
 #[pymethods]
 impl ClusterPy {
     fn __repr__(&self) -> String {
         format!(
-            "Cluster(pixel_count={}, centroid=({:.1}, {:.1}))",
-            self.pixel_count, self.centroid.0, self.centroid.1
+            "Cluster(pixel_count={}, centroid=({:.1}, {:.1}), merged_from={})",
+            self.pixel_count, self.centroid.0, self.centroid.1, self.merged_from
         )
     }
 }
@@ -796,7 +798,7 @@ impl ComparisonPy {
     }
 
     /// Compute connected-component clusters of differing pixels.
-    #[pyo3(signature = (threshold = 0.1, include_aa = false, min_pixels = 16, min_side = 0, dilation = 4, max_clusters = None))]
+    #[pyo3(signature = (threshold = 0.1, include_aa = false, min_pixels = 16, min_side = 0, dilation = 4, max_clusters = None, merge_gap = 0, merge_overlap = 0.5))]
     fn clusters(
         &self,
         py: Python<'_>,
@@ -806,6 +808,8 @@ impl ComparisonPy {
         min_side: usize,
         dilation: usize,
         max_clusters: Option<usize>,
+        merge_gap: usize,
+        merge_overlap: f64,
     ) -> PyResult<Py<ClustersResultPy>> {
         let options = pixelmatch_count_options(threshold, include_aa)?;
         let cluster_opts = ClusterOptions {
@@ -813,6 +817,8 @@ impl ComparisonPy {
             min_side,
             dilation,
             max_clusters,
+            merge_gap,
+            merge_overlap,
         };
         let output = py
             .allow_threads(|| self.inner.clusters(&options, &cluster_opts))
@@ -837,6 +843,7 @@ impl ComparisonPy {
                         bbox,
                         pixel_count: c.pixel_count,
                         centroid: c.centroid,
+                        merged_from: c.merged_from,
                     },
                 )
             })

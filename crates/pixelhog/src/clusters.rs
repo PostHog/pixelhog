@@ -13,6 +13,8 @@ pub struct DiffCluster {
     pub bbox: BoundingBox,
     pub pixel_count: usize,
     pub centroid: (f64, f64),
+    /// Number of raw clusters that were merged to produce this one (1 = no merge).
+    pub merged_from: usize,
 }
 
 /// Options for cluster extraction.
@@ -26,6 +28,12 @@ pub struct ClusterOptions {
     pub dilation: usize,
     /// Keep only the top N clusters by pixel count. `None` = no limit.
     pub max_clusters: Option<usize>,
+    /// Post-CCL aligned-bbox merge: max gap on the perpendicular axis.
+    /// 0 disables merging. Merges clusters that are aligned on one axis
+    /// and within this distance on the other.
+    pub merge_gap: usize,
+    /// Minimum overlap ratio on the shared axis to consider two clusters aligned.
+    pub merge_overlap: f64,
 }
 
 impl Default for ClusterOptions {
@@ -35,6 +43,8 @@ impl Default for ClusterOptions {
             min_side: 0,
             dilation: 4,
             max_clusters: None,
+            merge_gap: 0,
+            merge_overlap: 0.5,
         }
     }
 }
@@ -46,6 +56,102 @@ pub struct ClustersOutput {
     pub clusters: Vec<DiffCluster>,
     /// Total qualifying clusters before `max_clusters` truncation.
     pub total_clusters: usize,
+}
+
+fn axis_overlap_ratio(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> f64 {
+    let overlap_start = a_start.max(b_start);
+    let overlap_end = a_end.min(b_end);
+    if overlap_start >= overlap_end {
+        return 0.0;
+    }
+    let overlap = (overlap_end - overlap_start) as f64;
+    let shorter = (a_end - a_start).min(b_end - b_start) as f64;
+    if shorter == 0.0 {
+        return 0.0;
+    }
+    overlap / shorter
+}
+
+fn perpendicular_gap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> usize {
+    if a_end <= b_start {
+        b_start - a_end
+    } else {
+        a_start.saturating_sub(b_end)
+    }
+}
+
+fn should_merge(a: &BoundingBox, b: &BoundingBox, max_gap: usize, min_overlap: f64) -> bool {
+    let x_overlap = axis_overlap_ratio(a.x, a.x + a.width, b.x, b.x + b.width);
+    let y_overlap = axis_overlap_ratio(a.y, a.y + a.height, b.y, b.y + b.height);
+
+    if x_overlap > 0.0 && y_overlap > 0.0 {
+        return true;
+    }
+
+    // Aligned on X (horizontally overlapping), check vertical gap.
+    if x_overlap >= min_overlap {
+        let gap = perpendicular_gap(a.y, a.y + a.height, b.y, b.y + b.height);
+        if gap <= max_gap {
+            return true;
+        }
+    }
+
+    // Aligned on Y (vertically overlapping), check horizontal gap.
+    if y_overlap >= min_overlap {
+        let gap = perpendicular_gap(a.x, a.x + a.width, b.x, b.x + b.width);
+        if gap <= max_gap {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn merge_two(a: &DiffCluster, b: &DiffCluster) -> DiffCluster {
+    let x_min = a.bbox.x.min(b.bbox.x);
+    let y_min = a.bbox.y.min(b.bbox.y);
+    let x_max = (a.bbox.x + a.bbox.width).max(b.bbox.x + b.bbox.width);
+    let y_max = (a.bbox.y + a.bbox.height).max(b.bbox.y + b.bbox.height);
+    let total_pixels = a.pixel_count + b.pixel_count;
+    let cx = (a.centroid.0 * a.pixel_count as f64 + b.centroid.0 * b.pixel_count as f64)
+        / total_pixels as f64;
+    let cy = (a.centroid.1 * a.pixel_count as f64 + b.centroid.1 * b.pixel_count as f64)
+        / total_pixels as f64;
+    DiffCluster {
+        bbox: BoundingBox {
+            x: x_min,
+            y: y_min,
+            width: x_max - x_min,
+            height: y_max - y_min,
+        },
+        pixel_count: total_pixels,
+        centroid: (cx, cy),
+        merged_from: a.merged_from + b.merged_from,
+    }
+}
+
+fn merge_aligned_clusters(clusters: &mut Vec<DiffCluster>, max_gap: usize, min_overlap: f64) {
+    loop {
+        let mut merged = false;
+        let mut i = 0;
+        while i < clusters.len() {
+            let mut j = i + 1;
+            while j < clusters.len() {
+                if should_merge(&clusters[i].bbox, &clusters[j].bbox, max_gap, min_overlap) {
+                    let b = clusters.remove(j);
+                    clusters[i] = merge_two(&clusters[i], &b);
+                    merged = true;
+                } else {
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+        if !merged {
+            break;
+        }
+    }
+    clusters.sort_by(|a, b| b.pixel_count.cmp(&a.pixel_count));
 }
 
 /// Compute connected-component clusters from a binary diff mask.
@@ -163,6 +269,7 @@ pub fn compute_clusters(
                 s.sum_x as f64 / s.pixel_count as f64,
                 s.sum_y as f64 / s.pixel_count as f64,
             ),
+            merged_from: 1,
         })
         .filter(|c| min_side == 0 || c.bbox.width.min(c.bbox.height) >= min_side)
         .collect();
@@ -172,6 +279,10 @@ pub fn compute_clusters(
     let total_clusters = clusters.len();
     if let Some(max) = options.max_clusters {
         clusters.truncate(max);
+    }
+
+    if options.merge_gap > 0 {
+        merge_aligned_clusters(&mut clusters, options.merge_gap, options.merge_overlap);
     }
 
     ClustersOutput {
@@ -293,6 +404,8 @@ mod tests {
             min_side: 0,
             dilation: 0,
             max_clusters: None,
+            merge_gap: 0,
+            merge_overlap: 0.5,
         }
     }
 
@@ -302,6 +415,8 @@ mod tests {
             min_side,
             dilation,
             max_clusters: None,
+            merge_gap: 0,
+            merge_overlap: 0.5,
         }
     }
 
@@ -472,9 +587,156 @@ mod tests {
                 min_side: 0,
                 dilation: 0,
                 max_clusters: Some(2),
+                merge_gap: 0,
+                merge_overlap: 0.5,
             },
         );
         assert_eq!(capped.clusters.len(), 2);
         assert_eq!(capped.total_clusters, 3);
+    }
+
+    #[test]
+    fn aligned_merge_vertical_list() {
+        // Three horizontally-aligned clusters stacked vertically with small gaps.
+        // Simulates rows in a list shifting: same x-extent, separated by 2 rows.
+        let mut mask = vec![false; 20 * 20];
+        // Row 0-1, cols 2-7 (cluster A)
+        for y in 0..2 {
+            for x in 2..8 {
+                mask[y * 20 + x] = true;
+            }
+        }
+        // Row 4-5, cols 2-7 (cluster B, gap of 2 rows)
+        for y in 4..6 {
+            for x in 2..8 {
+                mask[y * 20 + x] = true;
+            }
+        }
+        // Row 8-9, cols 2-7 (cluster C, gap of 2 rows)
+        for y in 8..10 {
+            for x in 2..8 {
+                mask[y * 20 + x] = true;
+            }
+        }
+
+        // Without merge: 3 clusters.
+        let no_merge = compute_clusters(&mask, 20, 20, &opts(1));
+        assert_eq!(no_merge.clusters.len(), 3);
+
+        // With merge (gap=3, overlap=0.5): all collapse into 1.
+        let merged = compute_clusters(
+            &mask,
+            20,
+            20,
+            &ClusterOptions {
+                min_pixels: 1,
+                min_side: 0,
+                dilation: 0,
+                max_clusters: None,
+                merge_gap: 3,
+                merge_overlap: 0.5,
+            },
+        );
+        assert_eq!(merged.clusters.len(), 1);
+        assert_eq!(merged.clusters[0].pixel_count, 36);
+        assert_eq!(merged.clusters[0].merged_from, 3);
+    }
+
+    #[test]
+    fn aligned_merge_does_not_merge_unrelated() {
+        // Two clusters at opposite corners — no axis alignment.
+        let mut mask = vec![false; 20 * 20];
+        // Top-left: rows 0-2, cols 0-2
+        for y in 0..3 {
+            for x in 0..3 {
+                mask[y * 20 + x] = true;
+            }
+        }
+        // Bottom-right: rows 17-19, cols 17-19
+        for y in 17..20 {
+            for x in 17..20 {
+                mask[y * 20 + x] = true;
+            }
+        }
+
+        let merged = compute_clusters(
+            &mask,
+            20,
+            20,
+            &ClusterOptions {
+                min_pixels: 1,
+                min_side: 0,
+                dilation: 0,
+                max_clusters: None,
+                merge_gap: 60,
+                merge_overlap: 0.5,
+            },
+        );
+        assert_eq!(merged.clusters.len(), 2);
+        assert_eq!(merged.clusters[0].merged_from, 1);
+    }
+
+    #[test]
+    fn aligned_merge_horizontal_strip() {
+        // Two vertically-aligned clusters side by side with a small horizontal gap.
+        let mut mask = vec![false; 20 * 20];
+        // Cols 0-3, rows 5-14 (cluster A)
+        for y in 5..15 {
+            for x in 0..4 {
+                mask[y * 20 + x] = true;
+            }
+        }
+        // Cols 6-9, rows 5-14 (cluster B, gap of 2 cols)
+        for y in 5..15 {
+            for x in 6..10 {
+                mask[y * 20 + x] = true;
+            }
+        }
+
+        let merged = compute_clusters(
+            &mask,
+            20,
+            20,
+            &ClusterOptions {
+                min_pixels: 1,
+                min_side: 0,
+                dilation: 0,
+                max_clusters: None,
+                merge_gap: 3,
+                merge_overlap: 0.5,
+            },
+        );
+        assert_eq!(merged.clusters.len(), 1);
+        assert_eq!(merged.clusters[0].merged_from, 2);
+    }
+
+    #[test]
+    fn merge_gap_zero_disables() {
+        let mut mask = vec![false; 20 * 20];
+        for y in 0..2 {
+            for x in 2..8 {
+                mask[y * 20 + x] = true;
+            }
+        }
+        for y in 4..6 {
+            for x in 2..8 {
+                mask[y * 20 + x] = true;
+            }
+        }
+
+        let result = compute_clusters(
+            &mask,
+            20,
+            20,
+            &ClusterOptions {
+                min_pixels: 1,
+                min_side: 0,
+                dilation: 0,
+                max_clusters: None,
+                merge_gap: 0,
+                merge_overlap: 0.5,
+            },
+        );
+        assert_eq!(result.clusters.len(), 2);
     }
 }

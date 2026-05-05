@@ -309,6 +309,7 @@ fn test_clusters_two_separate_regions() {
         min_side: 0,
         dilation: 0,
         max_clusters: None,
+        ..Default::default()
     };
     let (diff_count, cluster_output, w, h) =
         diff_clusters_png(&baseline, &current, &options, &raw_opts).expect("clusters");
@@ -338,6 +339,7 @@ fn test_clusters_count_matches_diff_count() {
         min_side: 0,
         dilation: 0,
         max_clusters: None,
+        ..Default::default()
     };
     let (count, _, _) = diff_count_png(&baseline, &current, &options).expect("count");
     let (cluster_count, cluster_output, _, _) =
@@ -357,6 +359,7 @@ fn test_clusters_identical_images_empty() {
         min_side: 0,
         dilation: 0,
         max_clusters: None,
+        ..Default::default()
     };
 
     let (diff_count, cluster_output, _, _) =

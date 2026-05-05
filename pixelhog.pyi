@@ -141,6 +141,8 @@ class Cluster:
     def pixel_count(self) -> int: ...
     @property
     def centroid(self) -> tuple[float, float]: ...
+    @property
+    def merged_from(self) -> int: ...
 
 class ClustersResult:
     @property
@@ -194,6 +196,8 @@ class Comparison:
         min_side: int = 0,
         dilation: int = 4,
         max_clusters: Optional[int] = None,
+        merge_gap: int = 0,
+        merge_overlap: float = 0.5,
     ) -> ClustersResult: ...
     def diff_image(
         self,

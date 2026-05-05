@@ -8,6 +8,12 @@ to merge nearby fragments into UI-level regions, then two-pass CCL with 8-connec
 union-find. Configurable via `dilation`, `min_pixels` (default 16), and `min_side` params.
 Results sorted by `pixel_count` descending for triage UIs. ~15% overhead over count-only.
 
+**Aligned-bbox cluster merge.** Post-CCL pass that collapses clusters sharing axis alignment
+into regional groups. Catches the common "list reorder" pattern where every row becomes its
+own cluster despite being a single semantic change. Enabled via `merge_gap` (max perpendicular
+distance, default 0 = off) and `merge_overlap` (min axis overlap ratio, default 0.5). Merged
+clusters expose `merged_from` count.
+
 **Performance: threshold=0 fast path.** When threshold is 0 and AA detection is off, the
 count-only and mask paths skip `color_delta` entirely and just count u32 mismatches. ~25%
 faster across all image sizes for this scenario.
