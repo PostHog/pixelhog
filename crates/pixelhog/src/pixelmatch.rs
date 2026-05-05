@@ -198,6 +198,13 @@ pub fn pixelmatch_count_rgba_capped(
     options: &PixelmatchOptions,
     max_diffs: usize,
 ) -> Result<PixelmatchCountOutput, Error> {
+    if max_diffs == 0 {
+        return Ok(PixelmatchCountOutput {
+            diff_count: 0,
+            width,
+            height,
+        });
+    }
     pixelmatch_count_rgba_inner(img1, img2, width, height, options, Some(max_diffs))
 }
 

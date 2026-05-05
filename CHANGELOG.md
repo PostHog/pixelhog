@@ -12,7 +12,8 @@ Results sorted by `pixel_count` descending for triage UIs. ~15% overhead over co
 into regional groups. Catches the common "list reorder" pattern where every row becomes its
 own cluster despite being a single semantic change. Enabled via `merge_gap` (max perpendicular
 distance, default 0 = off) and `merge_overlap` (min axis overlap ratio, default 0.5). Merged
-clusters expose `merged_from` count.
+clusters expose `merged_from` count. `ClustersResult.truncated` only reflects `max_clusters`
+cap-hit — merge-collapse does not set it. `total_clusters` reports pre-cap count.
 
 **Performance: threshold=0 fast path.** When threshold is 0 and AA detection is off, the
 count-only and mask paths skip `color_delta` entirely and just count u32 mismatches. ~25%

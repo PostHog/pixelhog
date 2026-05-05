@@ -311,24 +311,21 @@ struct ClustersResultPy {
     clusters: Vec<Py<ClusterPy>>,
     #[pyo3(get)]
     total_clusters: usize,
+    #[pyo3(get)]
+    truncated: bool,
 }
 
 #[pymethods]
 impl ClustersResultPy {
-    #[getter]
-    fn truncated(&self) -> bool {
-        self.clusters.len() < self.total_clusters
-    }
-
     fn __repr__(&self) -> String {
-        if self.clusters.len() < self.total_clusters {
+        if self.truncated {
             format!(
                 "ClustersResult({} of {}, truncated)",
                 self.clusters.len(),
                 self.total_clusters
             )
         } else {
-            format!("ClustersResult({})", self.total_clusters)
+            format!("ClustersResult({})", self.clusters.len())
         }
     }
 
@@ -508,6 +505,7 @@ impl ComparisonPy {
             ClustersResultPy {
                 clusters: clusters?,
                 total_clusters: output.total_clusters,
+                truncated: output.truncated,
             },
         )
     }

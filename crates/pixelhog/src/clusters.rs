@@ -56,6 +56,8 @@ pub struct ClustersOutput {
     pub clusters: Vec<DiffCluster>,
     /// Total qualifying clusters before `max_clusters` truncation.
     pub total_clusters: usize,
+    /// Whether `max_clusters` cap was hit (some clusters were dropped).
+    pub truncated: bool,
 }
 
 fn axis_overlap_ratio(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> f64 {
@@ -171,6 +173,7 @@ pub fn compute_clusters(
         return ClustersOutput {
             clusters: Vec::new(),
             total_clusters: 0,
+            truncated: false,
         };
     }
 
@@ -277,6 +280,7 @@ pub fn compute_clusters(
     clusters.sort_by(|a, b| b.pixel_count.cmp(&a.pixel_count));
 
     let total_clusters = clusters.len();
+    let truncated = options.max_clusters.is_some_and(|max| total_clusters > max);
     if let Some(max) = options.max_clusters {
         clusters.truncate(max);
     }
@@ -288,6 +292,7 @@ pub fn compute_clusters(
     ClustersOutput {
         clusters,
         total_clusters,
+        truncated,
     }
 }
 
@@ -593,6 +598,45 @@ mod tests {
         );
         assert_eq!(capped.clusters.len(), 2);
         assert_eq!(capped.total_clusters, 3);
+        assert!(capped.truncated);
+    }
+
+    #[test]
+    fn merge_does_not_set_truncated() {
+        // 3 clusters merge into 1 — truncated should be false.
+        let mut mask = vec![false; 20 * 20];
+        for y in 0..2 {
+            for x in 2..8 {
+                mask[y * 20 + x] = true;
+            }
+        }
+        for y in 4..6 {
+            for x in 2..8 {
+                mask[y * 20 + x] = true;
+            }
+        }
+        for y in 8..10 {
+            for x in 2..8 {
+                mask[y * 20 + x] = true;
+            }
+        }
+
+        let result = compute_clusters(
+            &mask,
+            20,
+            20,
+            &ClusterOptions {
+                min_pixels: 1,
+                min_side: 0,
+                dilation: 0,
+                max_clusters: None,
+                merge_gap: 3,
+                merge_overlap: 0.5,
+            },
+        );
+        assert_eq!(result.clusters.len(), 1);
+        assert_eq!(result.total_clusters, 3);
+        assert!(!result.truncated);
     }
 
     #[test]
