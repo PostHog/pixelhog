@@ -88,7 +88,6 @@ fn thumbnail_py(
     Ok(PyBytes::new(py, &result).into())
 }
 
-
 /// Diff multiple image pairs in parallel.
 #[pyfunction]
 #[pyo3(name = "diff_batch", signature = (
