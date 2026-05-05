@@ -6,8 +6,9 @@ Fast visual regression primitives for Python, implemented in Rust.
 - `diff`: exact pixel-level differences (with anti-alias handling), optional diff image output
 - `ssim`: perceptual similarity score in `[0.0, 1.0]`
 
-It also generates WebP thumbnails for overview grids, optionally piggybacking on an
-already-decoded image buffer during a `compare` call.
+It also provides spatial clustering (where on the page did things change), early-exit checks,
+and WebP thumbnail generation — all accessible through a stateful `Comparison` object that
+decodes images once and exposes methods on demand.
 
 ## Install (local dev)
 
@@ -21,15 +22,34 @@ maturin develop --release
 ## Quickstart
 
 ```python
-from pixelhog import diff, ssim, compare, thumbnail
+from pixelhog import Comparison, diff, ssim, compare, thumbnail
 
-# 1) Pixel-level diff + diff PNG
+# -- Stateful object API (recommended) --
+
+cmp = Comparison(baseline_png, current_png)
+
+count = cmp.diff_count()                     # pixel mismatch count
+score = cmp.ssim()                           # perceptual similarity
+png   = cmp.diff_image()                     # diff visualization (PNG bytes)
+thumb = cmp.current_thumbnail(width=200)     # lossless WebP thumbnail
+
+# Spatial clustering — where did things change?
+result = cmp.clusters(dilation=8, merge_gap=60)
+for cluster in result.clusters:
+    print(cluster.bbox.x, cluster.bbox.y, cluster.bbox.width, cluster.bbox.height)
+
+# Early exit — fail fast if too many diffs
+capped = cmp.diff_count_capped(max_diffs=1000)
+
+# -- Function-based API (still available) --
+
+# Pixel-level diff + diff PNG
 diff_png, diff_count, width, height = diff(baseline_png, current_png)
 
-# 2) Perceptual similarity
+# Perceptual similarity
 score = ssim(baseline_png, current_png)
 
-# 3) One-call gate: count + SSIM + optional diff + optional thumbnail
+# One-call gate: count + SSIM + optional diff + optional thumbnail
 diff_count, score, width, height, diff_png, thumb = compare(
     baseline_png,
     current_png,
@@ -38,11 +58,29 @@ diff_count, score, width, height, diff_png, thumb = compare(
     thumbnail_height=150,
 )
 
-# 4) Standalone thumbnail (lossless WebP, Lanczos3 downscale, top-crop)
+# Standalone thumbnail (lossless WebP, Lanczos3 downscale, top-crop)
 thumb = thumbnail(current_png, width=200, height=150)
 ```
 
 ## API at a glance
+
+### Comparison (stateful, decode-once)
+
+| Method | Returns | Notes |
+|---|---|---|
+| `Comparison(baseline_png, current_png)` | `Comparison` | Decode pair once, call methods on demand |
+| `Comparison.from_rgba(...)` | `Comparison` | Pre-decoded RGBA buffers |
+| `Comparison.batch(pairs)` | `list[Comparison]` | Parallel decode |
+| `.diff_count(threshold, include_aa)` | `int` | Pixel mismatch count |
+| `.diff_count_capped(max_diffs, ...)` | `int` | Early-exit count |
+| `.ssim()` | `float` | Structural similarity |
+| `.clusters(dilation, merge_gap, ...)` | `ClustersResult` | Spatial regions of change |
+| `.diff_image(...)` | `bytes` (PNG) | Diff visualization |
+| `.current_thumbnail(width, height, ...)` | `bytes` (WebP) | Thumbnail of current image |
+| `.baseline_thumbnail(width, height, ...)` | `bytes` (WebP) | Thumbnail of baseline image |
+| `.size_mismatch` | `bool` | Whether images had different dimensions |
+
+### Function-based API
 
 | Function | Input | Output | Use when |
 |---|---|---|---|
@@ -51,14 +89,11 @@ thumb = thumbnail(current_png, width=200, height=150)
 | `diff_count` | PNG bytes | `(diff_count, width, height)` | You only need the mismatch count |
 | `ssim` | PNG bytes | `float` | You need perceptual similarity |
 | `compare` | PNG bytes | `(diff_count, ssim, w, h, diff_png?, thumb?)` | You want both metrics in one call |
-| `diff_rgba` | RGBA bytes + sizes | `(diff_rgba, diff_count, width, height)` | You already decoded images in Python/Rust |
+| `diff_rgba` | RGBA bytes + sizes | `(diff_rgba, diff_count, width, height)` | Pre-decoded buffers |
 | `diff_count_rgba` | RGBA bytes + sizes | `(diff_count, width, height)` | Count-only on pre-decoded buffers |
 | `ssim_rgba` | RGBA bytes + sizes | `float` | SSIM on pre-decoded buffers |
-| `compare_rgba` | RGBA bytes + sizes | `(diff_count, ssim, w, h, diff_rgba?, thumb?)` | Combined metrics on pre-decoded buffers |
-| `diff_batch` | `list[(baseline, current)]` | `list[diff result]` | Run many diffs in one call |
-| `diff_count_batch` | `list[(baseline, current)]` | `list[count result]` | Batch count-only checks |
-| `ssim_batch` | `list[(baseline, current)]` | `list[float]` | Batch SSIM checks |
-| `compare_batch` | `list[(baseline, current)]` | `list[compare result]` | Batch combined checks |
+| `compare_rgba` | RGBA bytes + sizes | `(diff_count, ssim, w, h, diff_rgba?, thumb?)` | Combined on pre-decoded buffers |
+| `*_batch` | `list[(baseline, current)]` | `list[result]` | Parallel processing of multiple pairs |
 
 ## Behavior
 
