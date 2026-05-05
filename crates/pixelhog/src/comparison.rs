@@ -24,8 +24,7 @@ pub struct Comparison {
     baseline_height: usize,
     current_width: usize,
     current_height: usize,
-    // Original images for thumbnail generation when sizes differ.
-    baseline_original: Option<Vec<u8>>,
+    // Original current image for thumbnail generation when sizes differ.
     current_original: Option<Vec<u8>>,
 }
 
@@ -69,12 +68,6 @@ impl Comparison {
     ) -> Result<Self, Error> {
         let needs_padding = baseline_width != current_width || baseline_height != current_height;
 
-        let (baseline_original, current_original) = if needs_padding {
-            (Some(baseline.clone()), Some(current.clone()))
-        } else {
-            (None, None)
-        };
-
         let (baseline_padded, current_padded, width, height) = pad_images_to_largest_cow(
             &baseline,
             baseline_width,
@@ -84,16 +77,22 @@ impl Comparison {
             current_height,
         )?;
 
+        // Materialize padded buffers first to release borrows.
+        let baseline_rgba = baseline_padded.into_owned();
+        let current_rgba = current_padded.into_owned();
+
+        // Move the original current for thumbnailing at native dimensions.
+        let current_original = if needs_padding { Some(current) } else { None };
+
         Ok(Self {
-            baseline_rgba: baseline_padded.into_owned(),
-            current_rgba: current_padded.into_owned(),
+            baseline_rgba,
+            current_rgba,
             width,
             height,
             baseline_width,
             baseline_height,
             current_width,
             current_height,
-            baseline_original,
             current_original,
         })
     }
@@ -217,10 +216,14 @@ impl Comparison {
         min_width: Option<usize>,
         min_height: Option<usize>,
     ) -> Result<Vec<u8>, Error> {
-        let (rgba, w, h) = match &self.baseline_original {
-            Some(orig) => (orig.as_slice(), self.baseline_width, self.baseline_height),
-            None => (self.baseline_rgba.as_slice(), self.width, self.height),
-        };
-        thumbnail_webp_full(rgba, w, h, max_width, max_height, min_width, min_height)
+        thumbnail_webp_full(
+            &self.baseline_rgba,
+            self.width,
+            self.height,
+            max_width,
+            max_height,
+            min_width,
+            min_height,
+        )
     }
 }

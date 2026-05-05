@@ -177,10 +177,10 @@ pub fn compute_clusters(
         };
     }
 
-    let mask = if options.dilation > 0 {
-        dilate_mask(diff_mask, width, height, options.dilation)
+    let mask: std::borrow::Cow<'_, [bool]> = if options.dilation > 0 {
+        std::borrow::Cow::Owned(dilate_mask(diff_mask, width, height, options.dilation))
     } else {
-        diff_mask.to_vec()
+        std::borrow::Cow::Borrowed(diff_mask)
     };
 
     let mut labels = vec![0u32; width * height];
@@ -297,25 +297,69 @@ pub fn compute_clusters(
 }
 
 /// Dilate a boolean mask by `radius` pixels (square structuring element).
+///
+/// Uses separable two-pass approach: horizontal then vertical, each O(width×height).
 fn dilate_mask(mask: &[bool], width: usize, height: usize, radius: usize) -> Vec<bool> {
-    let mut dilated = mask.to_vec();
+    // Horizontal pass: for each row, dilate along x.
+    let mut horiz = vec![false; width * height];
     for y in 0..height {
+        let row = y * width;
+        // Running count of "nearest true pixel within radius" using a sliding window.
+        let mut dist_to_true: usize = radius + 1;
+        // Forward pass: propagate rightward.
         for x in 0..width {
-            if !mask[y * width + x] {
-                continue;
+            if mask[row + x] {
+                dist_to_true = 0;
+            } else {
+                dist_to_true = dist_to_true.saturating_add(1);
             }
-            let y_min = y.saturating_sub(radius);
-            let y_max = (y + radius).min(height - 1);
-            let x_min = x.saturating_sub(radius);
-            let x_max = (x + radius).min(width - 1);
-            for dy in y_min..=y_max {
-                let row_start = dy * width;
-                for dx in x_min..=x_max {
-                    dilated[row_start + dx] = true;
-                }
+            if dist_to_true <= radius {
+                horiz[row + x] = true;
+            }
+        }
+        // Backward pass: propagate leftward.
+        dist_to_true = radius + 1;
+        for x in (0..width).rev() {
+            if mask[row + x] {
+                dist_to_true = 0;
+            } else {
+                dist_to_true = dist_to_true.saturating_add(1);
+            }
+            if dist_to_true <= radius {
+                horiz[row + x] = true;
             }
         }
     }
+
+    // Vertical pass: for each column, dilate along y.
+    let mut dilated = vec![false; width * height];
+    for x in 0..width {
+        let mut dist_to_true: usize = radius + 1;
+        // Forward pass: propagate downward.
+        for y in 0..height {
+            if horiz[y * width + x] {
+                dist_to_true = 0;
+            } else {
+                dist_to_true = dist_to_true.saturating_add(1);
+            }
+            if dist_to_true <= radius {
+                dilated[y * width + x] = true;
+            }
+        }
+        // Backward pass: propagate upward.
+        dist_to_true = radius + 1;
+        for y in (0..height).rev() {
+            if horiz[y * width + x] {
+                dist_to_true = 0;
+            } else {
+                dist_to_true = dist_to_true.saturating_add(1);
+            }
+            if dist_to_true <= radius {
+                dilated[y * width + x] = true;
+            }
+        }
+    }
+
     dilated
 }
 

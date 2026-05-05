@@ -645,6 +645,10 @@ fn validate_options(options: &PixelmatchOptions) -> Result<(), Error> {
 }
 
 fn rgba_as_u32_slice(img: &[u8]) -> U32Pixels<'_> {
+    debug_assert!(
+        img.as_ptr().align_offset(std::mem::align_of::<u32>()) == 0,
+        "RGBA buffer not 4-byte aligned — will allocate a copy"
+    );
     // SAFETY: We only accept the aligned view when both prefix and suffix are empty, so
     // the returned slice covers the full byte buffer with valid alignment and length.
     let (prefix, words, suffix) = unsafe { img.align_to::<u32>() };
