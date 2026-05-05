@@ -7,18 +7,26 @@
 //! High-level functions accept PNG bytes and decode internally. When images
 //! differ in size, the smaller one is padded with transparent pixels.
 
+pub mod clusters;
+mod comparison;
 mod error;
 pub mod image_utils;
 pub mod pixelmatch;
 pub mod ssim;
 
+use clusters::compute_clusters;
 use image_utils::{decode_png_rgba, encode_png, pad_images_to_largest_cow, thumbnail_webp};
-use pixelmatch::{pixelmatch_count_rgba, pixelmatch_rgba};
+use pixelmatch::{pixelmatch_count_rgba, pixelmatch_mask_rgba, pixelmatch_rgba};
 use rayon::join;
 use ssim::compute_ssim_rgba;
 
+pub use clusters::{BoundingBox, ClusterOptions, ClustersOutput, DiffCluster};
+pub use comparison::Comparison;
 pub use error::Error;
-pub use pixelmatch::{PixelmatchCountOutput, PixelmatchOptions, PixelmatchOutput};
+pub use pixelmatch::pixelmatch_count_rgba_capped;
+pub use pixelmatch::{
+    PixelmatchCountOutput, PixelmatchMaskOutput, PixelmatchOptions, PixelmatchOutput,
+};
 
 /// `(diff_png_bytes, diff_count, width, height)`
 pub type DiffPngOutput = (Vec<u8>, usize, usize, usize);
@@ -35,6 +43,8 @@ pub type CompareRgbaOutput = (Option<Vec<u8>>, usize, f64, usize, usize, Option<
 pub struct ThumbnailOptions {
     pub max_width: usize,
     pub max_height: Option<usize>,
+    pub min_width: Option<usize>,
+    pub min_height: Option<usize>,
 }
 
 type DecodedImage = (Vec<u8>, usize, usize);
@@ -353,6 +363,66 @@ pub fn compare_rgba(
     )?;
 
     Ok((diff_rgba, diff_count, ssim, width, height, thumb_webp))
+}
+
+/// Compute diff clusters from two PNG images.
+///
+/// Returns the diff count plus connected-component clusters of changed pixels.
+pub fn diff_clusters_png(
+    baseline_png: &[u8],
+    current_png: &[u8],
+    options: &PixelmatchOptions,
+    cluster_options: &ClusterOptions,
+) -> Result<(usize, ClustersOutput, usize, usize), Error> {
+    let (
+        (baseline_rgba, baseline_width, baseline_height),
+        (current_rgba, current_width, current_height),
+    ) = decode_png_pair(baseline_png, current_png)?;
+
+    diff_clusters_rgba(
+        &baseline_rgba,
+        baseline_width,
+        baseline_height,
+        &current_rgba,
+        current_width,
+        current_height,
+        options,
+        cluster_options,
+    )
+}
+
+/// Compute diff clusters from pre-decoded RGBA buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn diff_clusters_rgba(
+    baseline_rgba: &[u8],
+    baseline_width: usize,
+    baseline_height: usize,
+    current_rgba: &[u8],
+    current_width: usize,
+    current_height: usize,
+    options: &PixelmatchOptions,
+    cluster_options: &ClusterOptions,
+) -> Result<(usize, ClustersOutput, usize, usize), Error> {
+    let (baseline_padded, current_padded, width, height) = pad_images_to_largest_cow(
+        baseline_rgba,
+        baseline_width,
+        baseline_height,
+        current_rgba,
+        current_width,
+        current_height,
+    )?;
+
+    let mask_output = pixelmatch_mask_rgba(
+        baseline_padded.as_ref(),
+        current_padded.as_ref(),
+        width,
+        height,
+        options,
+    )?;
+
+    let cluster_output = compute_clusters(&mask_output.diff_mask, width, height, cluster_options);
+
+    Ok((mask_output.diff_count, cluster_output, width, height))
 }
 
 /// Create a lossless WebP thumbnail from PNG bytes.

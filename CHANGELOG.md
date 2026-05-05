@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.2.0
+
+**Spatial clustering.** New `clusters()` method returns connected-component regions of
+differing pixels with bounding boxes, pixel counts, and centroids. Uses dilation (default 4px)
+to merge nearby fragments into UI-level regions, then two-pass CCL with 8-connectivity and
+union-find. Configurable via `dilation`, `min_pixels` (default 16), and `min_side` params.
+Results sorted by `pixel_count` descending for triage UIs. ~15% overhead over count-only.
+
+**Aligned-bbox cluster merge.** Post-CCL pass that collapses clusters sharing axis alignment
+into regional groups. Catches the common "list reorder" pattern where every row becomes its
+own cluster despite being a single semantic change. Enabled via `merge_gap` (max perpendicular
+distance, default 0 = off) and `merge_overlap` (min axis overlap ratio, default 0.5). Merged
+clusters expose `merged_from` count. `ClustersResult.truncated` only reflects `max_clusters`
+cap-hit — merge-collapse does not set it. `total_clusters` reports pre-cap count.
+
+**Performance: threshold=0 fast path.** When threshold is 0 and AA detection is off, the
+count-only and mask paths skip `color_delta` entirely and just count u32 mismatches. ~25%
+faster across all image sizes for this scenario.
+
+**Performance: early exit.** New `diff_count_capped(max_diffs)` stops processing once enough
+diffs are found. Sub-100µs for a quick-fail check regardless of image size.
+
+**Comparison object API.** New `Comparison` class decodes PNGs once at construction, then
+exposes individual methods: `diff_count()`, `ssim()`, `clusters()`, `diff_image()`,
+`current_thumbnail()`, `baseline_thumbnail()`, `diff_count_capped()`. Also available via
+`Comparison.from_rgba()` and `Comparison.batch()`. Exposes `size_mismatch`, `baseline_size`,
+and `current_size` properties so callers can detect padding artifacts. Exposed as frozen
+`#[pyclass]` with proper `BoundingBox` and `Cluster` result types.
+
+**Breaking: standalone paired-image functions removed.** `diff`, `diff_count`, `ssim`,
+`compare`, and their `_rgba` variants are gone. Use `Comparison(a, b).method(...)` instead —
+same functionality, no redundant decode. Batch APIs (`diff_batch`, `compare_batch`, etc.) and
+`thumbnail` remain as standalone functions.
+
+**Smarter thumbnails for extreme aspect ratios.** `current_thumbnail()` and
+`baseline_thumbnail()` accept `min_width` / `min_height` floors. When proportional scaling
+would produce a result smaller than the floor (e.g. a 1065×30 tab bar → 200×6), the original
+is top-left cropped instead of scaled down. No upscaling. Existing callers are unaffected —
+floors default to `None`.
+
+**Expanded benchmarks.** 9 groups covering 2.1M / 2.5M / 18M pixel images across count-only,
+diff image, SSIM, compare, clusters, early exit, identical, and small-diff scenarios.
+
 ## 1.1.0
 
 **Diff PNG output is now 97% smaller.** Encoding switched from `Fast + NoFilter + RGBA`
