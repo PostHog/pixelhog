@@ -584,6 +584,35 @@ impl ComparisonPy {
         Ok(PyBytes::new(py, &result).into())
     }
 
+    /// Generate aligned baseline and current thumbnails for split-view display.
+    ///
+    /// Both thumbnails are rendered from the shared combined canvas using a
+    /// single scale factor, so they come out the same size and preserve each
+    /// image's true relative size. Use these in split mode when baseline and
+    /// current can differ in dimensions — unlike `baseline_thumbnail` /
+    /// `current_thumbnail`, which scale each image independently and hide the
+    /// size change. Returns `(baseline_webp, current_webp)`.
+    #[pyo3(signature = (width = 200, height = None, min_width = None, min_height = None))]
+    fn aligned_thumbnails(
+        &self,
+        py: Python<'_>,
+        width: usize,
+        height: Option<usize>,
+        min_width: Option<usize>,
+        min_height: Option<usize>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
+        let (baseline, current) = py
+            .allow_threads(|| {
+                self.inner
+                    .aligned_thumbnails(width, height, min_width, min_height)
+            })
+            .map_err(to_py_err)?;
+        Ok((
+            PyBytes::new(py, &baseline).into(),
+            PyBytes::new(py, &current).into(),
+        ))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Comparison({}x{}, {} pixels)",

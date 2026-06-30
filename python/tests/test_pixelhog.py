@@ -867,6 +867,56 @@ class TestComparison:
             assert img.format == "WEBP"
             assert img.width == 200
 
+    def test_aligned_thumbnails_same_size(self):
+        baseline = solid_png(400, 800, (100, 100, 100, 255))
+        current = solid_png(400, 800, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        base_thumb, cur_thumb = cmp.aligned_thumbnails(width=200)
+        with Image.open(io.BytesIO(base_thumb)) as base_img, Image.open(
+            io.BytesIO(cur_thumb)
+        ) as cur_img:
+            assert base_img.format == "WEBP"
+            assert cur_img.format == "WEBP"
+            assert base_img.size == cur_img.size
+            assert base_img.width == 200
+
+    def test_aligned_thumbnails_preserve_relative_size(self):
+        # Baseline is twice the size of current on each axis.
+        baseline = solid_png(400, 800, (100, 100, 100, 255))
+        current = solid_png(200, 400, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        base_thumb, cur_thumb = cmp.aligned_thumbnails(width=200)
+        with Image.open(io.BytesIO(base_thumb)) as base_img, Image.open(
+            io.BytesIO(cur_thumb)
+        ) as cur_img:
+            # Both thumbnails share the combined canvas, so they come out the
+            # same size and stay aligned in split mode.
+            assert base_img.size == cur_img.size
+
+        # The smaller image is padded on the shared canvas, so its content
+        # only fills the top-left quadrant. The bottom-right corner of the
+        # current thumbnail is padding (black) while the baseline has content
+        # there, proving the size difference is preserved rather than scaled
+        # away.
+        with Image.open(io.BytesIO(cur_thumb)) as cur_img:
+            w, h = cur_img.size
+            cur_rgb = cur_img.convert("RGB")
+            assert cur_rgb.getpixel((w - 1, h - 1)) == (0, 0, 0)
+        with Image.open(io.BytesIO(base_thumb)) as base_img:
+            base_rgb = base_img.convert("RGB")
+            assert base_rgb.getpixel((w - 1, h - 1)) != (0, 0, 0)
+
+    def test_aligned_thumbnails_equal_to_separate_when_same_size(self):
+        baseline = solid_png(400, 800, (100, 100, 100, 255))
+        current = solid_png(400, 800, (200, 100, 100, 255))
+        cmp = Comparison(baseline, current)
+
+        base_thumb, cur_thumb = cmp.aligned_thumbnails(width=200)
+        assert base_thumb == cmp.baseline_thumbnail(width=200)
+        assert cur_thumb == cmp.current_thumbnail(width=200)
+
     def test_clusters_sorted_by_pixel_count_desc(self):
         baseline = solid_png(100, 100, (255, 255, 255, 255))
 

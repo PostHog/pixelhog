@@ -140,6 +140,13 @@ class Comparison:
         min_width: Optional[int] = None,
         min_height: Optional[int] = None,
     ) -> bytes: ...
+    def aligned_thumbnails(
+        self,
+        width: int = 200,
+        height: Optional[int] = None,
+        min_width: Optional[int] = None,
+        min_height: Optional[int] = None,
+    ) -> tuple[bytes, bytes]: ...
 
 __version__: str
 

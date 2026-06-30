@@ -226,4 +226,49 @@ impl Comparison {
             min_height,
         )
     }
+
+    /// Generate aligned baseline and current thumbnails for split-view display.
+    ///
+    /// Both thumbnails are rendered from the shared combined canvas
+    /// ([`width`](Self::width) × [`height`](Self::height) — the union of the
+    /// two image sizes, with the smaller image transparent-padded) using a
+    /// single scale factor. Unlike calling [`baseline_thumbnail`] and
+    /// [`current_thumbnail`] separately — which scale each image
+    /// independently to fill the frame and so make a 500×400 and a 1000×800
+    /// image look identical in size — this keeps the two thumbnails the same
+    /// dimensions *and* preserves each image's true relative size. When the
+    /// baseline and current differ in dimensions, the size change stays
+    /// visible in split mode (the smaller image keeps its padded margin).
+    ///
+    /// Returns `(baseline_webp, current_webp)`.
+    ///
+    /// [`baseline_thumbnail`]: Self::baseline_thumbnail
+    /// [`current_thumbnail`]: Self::current_thumbnail
+    pub fn aligned_thumbnails(
+        &self,
+        max_width: usize,
+        max_height: Option<usize>,
+        min_width: Option<usize>,
+        min_height: Option<usize>,
+    ) -> Result<(Vec<u8>, Vec<u8>), Error> {
+        let baseline = thumbnail_webp_full(
+            &self.baseline_rgba,
+            self.width,
+            self.height,
+            max_width,
+            max_height,
+            min_width,
+            min_height,
+        )?;
+        let current = thumbnail_webp_full(
+            &self.current_rgba,
+            self.width,
+            self.height,
+            max_width,
+            max_height,
+            min_width,
+            min_height,
+        )?;
+        Ok((baseline, current))
+    }
 }
