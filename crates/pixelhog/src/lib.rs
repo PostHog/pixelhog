@@ -7,7 +7,7 @@
 //! High-level functions accept PNG bytes and decode internally. When images
 //! differ in size, the smaller one is padded with transparent pixels.
 
-pub mod alignment;
+mod alignment;
 pub mod clusters;
 mod comparison;
 mod error;

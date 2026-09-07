@@ -104,10 +104,11 @@ pub struct RowAlignment {
     pub segments: Vec<RowSegment>,
     pub bands: Vec<ShiftBand>,
     // Row indices only mean something for the pair they were computed from, so
-    // the aligned_* calls refuse an alignment from a differently sized pair.
+    // the aligned_* calls refuse an alignment that came from another pair.
     width: usize,
     baseline_height: usize,
     current_height: usize,
+    fingerprint: u64,
 }
 
 impl RowAlignment {
@@ -124,7 +125,13 @@ impl RowAlignment {
             width: images.width,
             baseline_height: images.baseline_height,
             current_height: images.current_height,
+            fingerprint: 0,
         }
+    }
+
+    /// Identifies the pair this alignment was computed from.
+    pub(crate) fn fingerprint(&self) -> u64 {
+        self.fingerprint
     }
 }
 
@@ -133,7 +140,7 @@ impl RowAlignment {
 /// `width` is the padded width both buffers were stored at, so a row is always
 /// `width * 4` bytes. The unpadded widths decide whether the pair can be
 /// aligned at all; once it can, all three are the same number.
-pub struct RowImages<'a> {
+pub(crate) struct RowImages<'a> {
     pub baseline_rgba: &'a [u8],
     pub current_rgba: &'a [u8],
     pub width: usize,
@@ -181,6 +188,30 @@ fn hash_rows(rgba: &[u8], stride: usize, rows: usize) -> Vec<u64> {
         .par_chunks_exact(stride)
         .map(hash_row)
         .collect()
+}
+
+/// Fold the row hashes of both images into one value that identifies the pair.
+fn fold_hashes(baseline_hashes: &[u64], current_hashes: &[u64]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write_usize(baseline_hashes.len());
+    for hash in baseline_hashes {
+        hasher.write_u64(*hash);
+    }
+    hasher.write_usize(current_hashes.len());
+    for hash in current_hashes {
+        hasher.write_u64(*hash);
+    }
+    hasher.finish()
+}
+
+/// Fingerprint a pair that has not been aligned, so a foreign alignment can
+/// still be recognized as foreign.
+pub(crate) fn pair_fingerprint(images: &RowImages) -> u64 {
+    let stride = images.width * 4;
+    fold_hashes(
+        &hash_rows(images.baseline_rgba, stride, images.baseline_height),
+        &hash_rows(images.current_rgba, stride, images.current_height),
+    )
 }
 
 /// One row-level edit, before consecutive edits are merged into runs.
@@ -583,7 +614,7 @@ fn validate_alignment_options(options: &RowAlignmentOptions) -> Result<(), Error
 ///
 /// Alignment is vertical only: a pair whose unpadded widths differ shares no
 /// row and comes back unaligned without being hashed.
-pub fn compute_row_alignment(
+pub(crate) fn compute_row_alignment(
     images: &RowImages,
     pixel_options: &PixelmatchOptions,
     options: &RowAlignmentOptions,
@@ -635,11 +666,20 @@ pub fn compute_row_alignment(
         width: images.width,
         baseline_height: images.baseline_height,
         current_height: images.current_height,
+        fingerprint: fold_hashes(&baseline_hashes, &current_hashes),
     })
 }
 
 /// An alignment may only be used with the pair it was computed from.
-fn check_alignment(images: &RowImages, alignment: &RowAlignment) -> Result<(), Error> {
+///
+/// `fingerprint` identifies the caller's pair. Sizes are compared first because
+/// they are free, but two different pairs of the same size are common enough
+/// that the row hashes have to settle it.
+fn check_alignment(
+    images: &RowImages,
+    alignment: &RowAlignment,
+    fingerprint: u64,
+) -> Result<(), Error> {
     if !alignment.aligned {
         return Err(Error::NotAligned);
     }
@@ -647,6 +687,7 @@ fn check_alignment(images: &RowImages, alignment: &RowAlignment) -> Result<(), E
     if alignment.width != images.width
         || alignment.baseline_height != images.baseline_height
         || alignment.current_height != images.current_height
+        || alignment.fingerprint != fingerprint
     {
         return Err(Error::AlignmentMismatch);
     }
@@ -660,13 +701,15 @@ fn check_alignment(images: &RowImages, alignment: &RowAlignment) -> Result<(), E
 /// bands are the shift signal and the mask is the residual, and a caller decides
 /// separately whether to absorb a shift or flag it, reading
 /// [`RowAlignment::bands`] for that.
-pub fn aligned_clusters(
+pub(crate) fn aligned_clusters(
     images: &RowImages,
     alignment: &RowAlignment,
+    fingerprint: u64,
     pixel_options: &PixelmatchOptions,
     cluster_options: &ClusterOptions,
 ) -> Result<ClustersOutput, Error> {
-    check_alignment(images, alignment)?;
+    check_alignment(images, alignment, fingerprint)?;
+    validate_options(pixel_options)?;
 
     let width = images.width;
     let mut mask = vec![false; width * images.current_height];
@@ -706,12 +749,13 @@ fn draw_band(diff: &mut [u8], width: usize, height: usize, band: &ShiftBand, col
 /// Equal rows are grayed like pixelmatch does, `Replace` rows carry the usual
 /// pixelmatch coloring, inserted bands are filled with `diff_color`, and a
 /// deleted band is one seam row in `diff_color_alt` when set.
-pub fn aligned_diff_image_rgba(
+pub(crate) fn aligned_diff_image_rgba(
     images: &RowImages,
     alignment: &RowAlignment,
+    fingerprint: u64,
     pixel_options: &PixelmatchOptions,
 ) -> Result<PixelmatchOutput, Error> {
-    check_alignment(images, alignment)?;
+    check_alignment(images, alignment, fingerprint)?;
     validate_options(pixel_options)?;
 
     let width = images.width;
@@ -767,12 +811,13 @@ pub fn aligned_diff_image_rgba(
 }
 
 /// PNG-encoded [`aligned_diff_image_rgba`].
-pub fn aligned_diff_image_png(
+pub(crate) fn aligned_diff_image_png(
     images: &RowImages,
     alignment: &RowAlignment,
+    fingerprint: u64,
     pixel_options: &PixelmatchOptions,
 ) -> Result<Vec<u8>, Error> {
-    let output = aligned_diff_image_rgba(images, alignment, pixel_options)?;
+    let output = aligned_diff_image_rgba(images, alignment, fingerprint, pixel_options)?;
     encode_png(&output.diff_rgba, output.width, output.height)
 }
 
@@ -799,8 +844,12 @@ fn stitch_matched_rows(
 /// leaves the two stitched images the same height. Rows that were far apart in
 /// the originals become neighbors at the seams, so the 11×11 window picks up
 /// small artifacts there — acceptable against reporting the whole shift.
-pub fn aligned_ssim(images: &RowImages, alignment: &RowAlignment) -> Result<f64, Error> {
-    check_alignment(images, alignment)?;
+pub(crate) fn aligned_ssim(
+    images: &RowImages,
+    alignment: &RowAlignment,
+    fingerprint: u64,
+) -> Result<f64, Error> {
+    check_alignment(images, alignment, fingerprint)?;
 
     let stride = images.width * 4;
     if stride == 0 {

@@ -770,3 +770,70 @@ fn test_rows_deleted_from_the_bottom_leave_the_seam_past_the_last_row() {
         .chunks_exact(4)
         .all(|px| px[..3] != options.diff_color));
 }
+
+fn solid_rgba(width: usize, height: usize, color: [u8; 4]) -> Vec<u8> {
+    let mut rgba = vec![0u8; width * height * 4];
+    for px in rgba.chunks_exact_mut(4) {
+        px.copy_from_slice(&color);
+    }
+    rgba
+}
+
+#[test]
+fn test_aligned_calls_reject_a_same_size_alignment_from_another_pair() {
+    let options = PixelmatchOptions::default();
+    let (width, height) = (20, 20);
+
+    let page = page_rgba(width, height);
+    let identical =
+        Comparison::from_rgba(&page, width, height, &page, width, height).expect("comparison");
+    let foreign = identical
+        .row_alignment(&options, &RowAlignmentOptions::default())
+        .expect("alignment");
+
+    let black = solid_rgba(width, height, [0, 0, 0, 255]);
+    let white = solid_rgba(width, height, [255, 255, 255, 255]);
+    let other =
+        Comparison::from_rgba(&black, width, height, &white, width, height).expect("comparison");
+
+    assert!(matches!(
+        other.aligned_diff_image_rgba(&foreign, &options),
+        Err(Error::AlignmentMismatch)
+    ));
+    assert!(matches!(
+        other.aligned_ssim(&foreign),
+        Err(Error::AlignmentMismatch)
+    ));
+    assert!(matches!(
+        other.aligned_clusters(&foreign, &options, &ClusterOptions::default()),
+        Err(Error::AlignmentMismatch)
+    ));
+}
+
+#[test]
+fn test_aligned_clusters_rejects_an_invalid_threshold() {
+    let (width, height, at) = (60, 40, 20);
+    let baseline = page_rgba(width, height);
+    let current = with_inserted_row(&baseline, width, height, at, [255, 0, 255, 255]);
+
+    let cmp = Comparison::from_rgba(&baseline, width, height, &current, width, height + 1)
+        .expect("comparison");
+    let alignment = cmp
+        .row_alignment(
+            &PixelmatchOptions::default(),
+            &RowAlignmentOptions::default(),
+        )
+        .expect("alignment");
+
+    // A pure shift has no Replace segments, so nothing else would look at the options.
+    assert_eq!(alignment.changed_rows, 0);
+
+    let invalid = PixelmatchOptions {
+        threshold: 2.0,
+        ..PixelmatchOptions::default()
+    };
+    assert!(matches!(
+        cmp.aligned_clusters(&alignment, &invalid, &ClusterOptions::default()),
+        Err(Error::InvalidOption(_))
+    ));
+}

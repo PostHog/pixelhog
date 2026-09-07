@@ -1164,3 +1164,21 @@ class TestRowAlignment:
 
         with pytest.raises(ValueError):
             cmp.row_alignment(max_edit_ratio=1.5)
+
+    def test_same_size_alignment_from_another_pair_is_rejected(self) -> None:
+        page = encode_png_rgba(
+            page_rgba(self.width, self.height), self.width, self.height
+        )
+        foreign = Comparison(page, page).row_alignment()
+
+        other = Comparison(
+            solid_png(self.width, self.height, (0, 0, 0, 255)),
+            solid_png(self.width, self.height, (255, 255, 255, 255)),
+        )
+
+        with pytest.raises(ValueError):
+            other.aligned_diff_image(foreign)
+        with pytest.raises(ValueError):
+            other.aligned_ssim(foreign)
+        with pytest.raises(ValueError):
+            other.aligned_clusters(foreign)
