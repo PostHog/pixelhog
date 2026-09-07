@@ -3,7 +3,8 @@ use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder};
 use pixelhog::{
     compare_png, diff_clusters_png, diff_count_png, diff_png, pixelmatch_count_rgba_capped,
-    ssim_png, ClusterOptions, ComparePngOutput, DiffCountOutput, DiffPngOutput, PixelmatchOptions,
+    ssim_png, ClusterOptions, ComparePngOutput, Comparison, DiffCountOutput, DiffPngOutput,
+    PixelmatchOptions, RowAlignmentOptions,
 };
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
@@ -476,6 +477,68 @@ fn bench_early_exit(c: &mut Criterion) {
     group.finish();
 }
 
+/// Generate a pair where the current image has one extra row at `at`, pushing
+/// everything below it down — the vertical shift row alignment exists for.
+fn make_row_shift_pair(width: usize, height: usize, at: usize) -> (Vec<u8>, Vec<u8>) {
+    let (baseline, _) = make_screenshot_pair_rgba(width, height);
+    let stride = width * 4;
+
+    let mut current = Vec::with_capacity(stride * (height + 1));
+    current.extend_from_slice(&baseline[..at * stride]);
+    for x in 0..width {
+        current.extend_from_slice(&[(x % 256) as u8, 90, 30, 255]);
+    }
+    current.extend_from_slice(&baseline[at * stride..]);
+
+    (baseline, current)
+}
+
+/// Row alignment: the shift cases it should absorb, plus a pair it must bail on.
+fn bench_row_alignment(c: &mut Criterion) {
+    let mut group = c.benchmark_group("row_alignment");
+    let options = PixelmatchOptions::default();
+    let alignment_options = RowAlignmentOptions::default();
+
+    let shift_sizes = [("2.1M_fullhd", 1920, 1080), ("tall_10000", 1059, 10000)];
+    for (name, width, height) in shift_sizes {
+        let (baseline, current) = make_row_shift_pair(width, height, height / 4);
+        let cmp = Comparison::from_rgba(&baseline, width, height, &current, width, height + 1)
+            .expect("comparison");
+
+        group.bench_function(BenchmarkId::new("one_row_shift", name), |b| {
+            b.iter(|| {
+                let r = cmp
+                    .row_alignment(black_box(&options), black_box(&alignment_options))
+                    .unwrap();
+                black_box(r);
+            })
+        });
+    }
+
+    // Nothing anchors, so the edit budget is exhausted and alignment bails out.
+    let (width, height) = (1920, 1080);
+    let (baseline, current) = make_screenshot_pair_rgba(width, height);
+    let mut shifted = vec![0u8; current.len()];
+    let stride = width * 4;
+    for y in 0..height {
+        shifted[y * stride + 4..(y + 1) * stride]
+            .copy_from_slice(&current[y * stride..(y + 1) * stride - 4]);
+    }
+    let cmp = Comparison::from_rgba(&baseline, width, height, &shifted, width, height)
+        .expect("comparison");
+
+    group.bench_function(BenchmarkId::new("bail_out", "2.1M_fullhd"), |b| {
+        b.iter(|| {
+            let r = cmp
+                .row_alignment(black_box(&options), black_box(&alignment_options))
+                .unwrap();
+            black_box(r);
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_count_threshold_zero,
@@ -487,5 +550,6 @@ criterion_group!(
     bench_identical,
     bench_clusters,
     bench_early_exit,
+    bench_row_alignment,
 );
 criterion_main!(benches);

@@ -71,6 +71,43 @@ class ClustersResult:
     def truncated(self) -> bool: ...
     def __len__(self) -> int: ...
 
+class ShiftBand:
+    @property
+    def y(self) -> int: ...
+    @property
+    def rows(self) -> int: ...
+    @property
+    def kind(self) -> str: ...
+
+class RowSegment:
+    @property
+    def kind(self) -> str: ...
+    @property
+    def baseline_start(self) -> int: ...
+    @property
+    def current_start(self) -> int: ...
+    @property
+    def len(self) -> int: ...
+
+class RowAlignment:
+    @property
+    def aligned(self) -> bool: ...
+    @property
+    def edit_distance(self) -> int: ...
+    @property
+    def inserted_rows(self) -> int: ...
+    @property
+    def deleted_rows(self) -> int: ...
+    @property
+    def changed_rows(self) -> int: ...
+    @property
+    def residual_count(self) -> int: ...
+    @property
+    def segments(self) -> list[RowSegment]: ...
+    @property
+    def bands(self) -> list[ShiftBand]: ...
+    def __repr__(self) -> str: ...
+
 class Comparison:
     def __init__(self, baseline_png: bytes, current_png: bytes) -> None: ...
     @staticmethod
@@ -126,6 +163,37 @@ class Comparison:
         aa_color: tuple[int, int, int] = (255, 255, 0),
         diff_color_alt: Optional[tuple[int, int, int]] = None,
     ) -> bytes: ...
+    def row_alignment(
+        self,
+        threshold: float = 0.1,
+        include_aa: bool = False,
+        max_edit_ratio: float = 0.25,
+        max_edit_rows: int = 2048,
+        max_row_occurrences: int = 20,
+    ) -> RowAlignment: ...
+    def aligned_clusters(
+        self,
+        alignment: RowAlignment,
+        threshold: float = 0.1,
+        include_aa: bool = False,
+        min_pixels: int = 16,
+        min_side: int = 0,
+        dilation: int = 4,
+        max_clusters: Optional[int] = None,
+        merge_gap: int = 0,
+        merge_overlap: float = 0.5,
+    ) -> ClustersResult: ...
+    def aligned_diff_image(
+        self,
+        alignment: RowAlignment,
+        threshold: float = 0.1,
+        alpha: float = 0.1,
+        include_aa: bool = False,
+        diff_color: tuple[int, int, int] = (255, 0, 0),
+        aa_color: tuple[int, int, int] = (255, 255, 0),
+        diff_color_alt: Optional[tuple[int, int, int]] = None,
+    ) -> bytes: ...
+    def aligned_ssim(self, alignment: RowAlignment) -> float: ...
     def current_thumbnail(
         self,
         width: int = 200,
@@ -148,6 +216,9 @@ __all__ = [
     "Cluster",
     "ClustersResult",
     "Comparison",
+    "RowAlignment",
+    "RowSegment",
+    "ShiftBand",
     "thumbnail",
     "diff_batch",
     "diff_count_batch",

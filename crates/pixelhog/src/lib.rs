@@ -7,6 +7,7 @@
 //! High-level functions accept PNG bytes and decode internally. When images
 //! differ in size, the smaller one is padded with transparent pixels.
 
+pub mod alignment;
 pub mod clusters;
 mod comparison;
 mod error;
@@ -20,6 +21,9 @@ use pixelmatch::{pixelmatch_count_rgba, pixelmatch_mask_rgba, pixelmatch_rgba};
 use rayon::join;
 use ssim::compute_ssim_rgba;
 
+pub use alignment::{
+    RowAlignment, RowAlignmentOptions, RowSegment, RowSegmentKind, ShiftBand, ShiftBandKind,
+};
 pub use clusters::{BoundingBox, ClusterOptions, ClustersOutput, DiffCluster};
 pub use comparison::Comparison;
 pub use error::Error;

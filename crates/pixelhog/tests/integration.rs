@@ -3,7 +3,7 @@ use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder, ImageFormat};
 use pixelhog::{
     compare_png, diff_clusters_png, diff_count_png, diff_png, diff_rgba, ssim_png, ssim_rgba,
-    ClusterOptions, PixelmatchOptions,
+    ClusterOptions, Comparison, PixelmatchOptions, RowAlignmentOptions, ShiftBand, ShiftBandKind,
 };
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
@@ -367,4 +367,260 @@ fn test_clusters_identical_images_empty() {
 
     assert_eq!(diff_count, 0);
     assert!(cluster_output.clusters.is_empty());
+}
+
+// -- Row alignment -----------------------------------------------------------
+
+/// A page with a border and per-row content, so rows hash distinctly and the
+/// anchor filter has anchors to work with.
+fn page_rgba(width: usize, height: usize) -> Vec<u8> {
+    let mut rgba = vec![0u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) * 4;
+            let border = x < 2 || x + 2 >= width || y < 2 || y + 2 >= height;
+            let pixel = if border {
+                [30, 30, 30, 255]
+            } else {
+                [
+                    ((x * 3 + y * 97) % 256) as u8,
+                    ((y * 71 + 40) % 256) as u8,
+                    ((x * 11 + y * 53) % 256) as u8,
+                    255,
+                ]
+            };
+            rgba[idx..idx + 4].copy_from_slice(&pixel);
+        }
+    }
+    rgba
+}
+
+fn row_of(rgba: &[u8], width: usize, y: usize) -> &[u8] {
+    &rgba[y * width * 4..(y + 1) * width * 4]
+}
+
+/// Copy `rgba` with one extra row of `color` pushed in at row `at`.
+fn with_inserted_row(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    at: usize,
+    color: [u8; 4],
+) -> Vec<u8> {
+    let stride = width * 4;
+    let mut out = Vec::with_capacity(stride * (height + 1));
+    out.extend_from_slice(&rgba[..at * stride]);
+    for _ in 0..width {
+        out.extend_from_slice(&color);
+    }
+    out.extend_from_slice(&rgba[at * stride..]);
+    out
+}
+
+fn paint_block(rgba: &mut [u8], width: usize, x0: usize, y0: usize, size: usize, color: [u8; 4]) {
+    for y in y0..y0 + size {
+        for x in x0..x0 + size {
+            let idx = (y * width + x) * 4;
+            rgba[idx..idx + 4].copy_from_slice(&color);
+        }
+    }
+}
+
+#[test]
+fn test_row_alignment_single_inserted_row() {
+    let (width, height, at) = (60, 80, 30);
+    let baseline = page_rgba(width, height);
+    let current = with_inserted_row(&baseline, width, height, at, [255, 0, 255, 255]);
+
+    let cmp = Comparison::from_rgba(&baseline, width, height, &current, width, height + 1)
+        .expect("comparison");
+    let options = PixelmatchOptions::default();
+    let alignment = cmp
+        .row_alignment(&options, &RowAlignmentOptions::default())
+        .expect("alignment");
+
+    assert!(alignment.aligned);
+    assert_eq!(alignment.inserted_rows, 1);
+    assert_eq!(alignment.deleted_rows, 0);
+    assert_eq!(alignment.changed_rows, 0);
+    assert_eq!(alignment.residual_count, 0);
+    assert_eq!(
+        alignment.bands,
+        vec![ShiftBand {
+            y: at,
+            rows: 1,
+            kind: ShiftBandKind::Inserted,
+        }]
+    );
+
+    // Top-aligned diffing flags everything below the inserted row.
+    let naive = cmp.diff_count(&options).expect("diff count");
+    assert!(naive > width * (height - at) / 2, "naive diff was {naive}");
+
+    let diff = cmp
+        .aligned_diff_image_rgba(&alignment, &options)
+        .expect("aligned diff image");
+    assert_eq!((diff.width, diff.height), (width, height + 1));
+
+    for y in 0..diff.height {
+        let is_band = row_of(&diff.diff_rgba, width, y)
+            .chunks_exact(4)
+            .all(|px| px[..3] == options.diff_color);
+        assert_eq!(is_band, y == at, "row {y} band state");
+    }
+}
+
+#[test]
+fn test_row_alignment_single_deleted_row() {
+    let (width, height, at) = (60, 80, 25);
+    let current = page_rgba(width, height);
+    let baseline = with_inserted_row(&current, width, height, at, [0, 255, 255, 255]);
+
+    let cmp = Comparison::from_rgba(&baseline, width, height + 1, &current, width, height)
+        .expect("comparison");
+    let alignment = cmp
+        .row_alignment(
+            &PixelmatchOptions::default(),
+            &RowAlignmentOptions::default(),
+        )
+        .expect("alignment");
+
+    assert!(alignment.aligned);
+    assert_eq!(alignment.deleted_rows, 1);
+    assert_eq!(alignment.inserted_rows, 0);
+    assert_eq!(alignment.residual_count, 0);
+    assert_eq!(
+        alignment.bands,
+        vec![ShiftBand {
+            y: at,
+            rows: 1,
+            kind: ShiftBandKind::Deleted,
+        }]
+    );
+}
+
+#[test]
+fn test_row_alignment_side_by_side_drift_is_a_content_change() {
+    let (width, height) = (60, 200);
+    let baseline = page_rgba(width, height);
+    let mut current = baseline.clone();
+
+    // Only the right half of a 40-row block moves down one pixel.
+    let (block_start, block_rows) = (40, 40);
+    let stride = width * 4;
+    let half = (width / 2) * 4;
+    for y in (block_start + 1..=block_start + block_rows).rev() {
+        let (above, row) = current.split_at_mut(y * stride);
+        row[half..stride]
+            .copy_from_slice(&above[(y - 1) * stride + half..(y - 1) * stride + stride]);
+    }
+
+    let cmp = Comparison::from_rgba(&baseline, width, height, &current, width, height)
+        .expect("comparison");
+    let options = PixelmatchOptions::default();
+    let alignment = cmp
+        .row_alignment(&options, &RowAlignmentOptions::default())
+        .expect("alignment");
+
+    assert!(alignment.aligned);
+    assert_eq!(alignment.inserted_rows, 0);
+    assert_eq!(alignment.deleted_rows, 0);
+    assert_eq!(alignment.changed_rows, block_rows);
+    assert!(alignment.residual_count > 0);
+    assert!(alignment.bands.is_empty());
+}
+
+#[test]
+fn test_row_alignment_bails_out_when_every_row_differs() {
+    let (width, height) = (60, 80);
+    let baseline = page_rgba(width, height);
+    let mut current = vec![0u8; baseline.len()];
+
+    // Shift the whole page one column to the right: no row can anchor.
+    let stride = width * 4;
+    for y in 0..height {
+        let row = &baseline[y * stride..(y + 1) * stride];
+        current[y * stride + 4..(y + 1) * stride].copy_from_slice(&row[..stride - 4]);
+    }
+
+    let cmp = Comparison::from_rgba(&baseline, width, height, &current, width, height)
+        .expect("comparison");
+    let alignment = cmp
+        .row_alignment(
+            &PixelmatchOptions::default(),
+            &RowAlignmentOptions::default(),
+        )
+        .expect("alignment");
+
+    assert!(!alignment.aligned);
+    assert!(alignment.segments.is_empty());
+    assert!(alignment.bands.is_empty());
+    assert_eq!(alignment.residual_count, 0);
+}
+
+#[test]
+fn test_aligned_clusters_ignore_the_shift_but_keep_real_changes() {
+    let (width, height, at) = (60, 120, 20);
+    let baseline = page_rgba(width, height);
+    let shifted = with_inserted_row(&baseline, width, height, at, [255, 0, 255, 255]);
+
+    let options = PixelmatchOptions::default();
+    let cluster_options = ClusterOptions {
+        min_pixels: 1,
+        min_side: 0,
+        dilation: 0,
+        max_clusters: None,
+        ..Default::default()
+    };
+
+    let cmp = Comparison::from_rgba(&baseline, width, height, &shifted, width, height + 1)
+        .expect("comparison");
+    let alignment = cmp
+        .row_alignment(&options, &RowAlignmentOptions::default())
+        .expect("alignment");
+    let clusters = cmp
+        .aligned_clusters(&alignment, &options, &cluster_options)
+        .expect("aligned clusters");
+    assert!(clusters.clusters.is_empty());
+
+    // Same shift, plus a block that really changed.
+    let mut changed = shifted.clone();
+    paint_block(&mut changed, width, 20, 70, 20, [255, 0, 0, 255]);
+
+    let cmp = Comparison::from_rgba(&baseline, width, height, &changed, width, height + 1)
+        .expect("comparison");
+    let alignment = cmp
+        .row_alignment(&options, &RowAlignmentOptions::default())
+        .expect("alignment");
+    let clusters = cmp
+        .aligned_clusters(&alignment, &options, &cluster_options)
+        .expect("aligned clusters");
+
+    assert_eq!(alignment.inserted_rows, 1);
+    assert_eq!(clusters.clusters.len(), 1);
+    let bbox = clusters.clusters[0].bbox;
+    assert_eq!((bbox.x, bbox.y), (20, 70));
+    assert_eq!((bbox.width, bbox.height), (20, 20));
+}
+
+#[test]
+fn test_aligned_ssim_ignores_the_shift() {
+    let (width, height, at) = (60, 120, 20);
+    let baseline = page_rgba(width, height);
+    let shifted = with_inserted_row(&baseline, width, height, at, [255, 0, 255, 255]);
+
+    let cmp = Comparison::from_rgba(&baseline, width, height, &shifted, width, height + 1)
+        .expect("comparison");
+    let alignment = cmp
+        .row_alignment(
+            &PixelmatchOptions::default(),
+            &RowAlignmentOptions::default(),
+        )
+        .expect("alignment");
+
+    let plain = cmp.ssim().expect("ssim");
+    let aligned = cmp.aligned_ssim(&alignment).expect("aligned ssim");
+
+    assert!(aligned > 0.99, "aligned ssim was {aligned}");
+    assert!(aligned > plain, "plain ssim was {plain}");
 }

@@ -9,6 +9,7 @@ from pixelhog import (
     Cluster,
     ClustersResult,
     Comparison,
+    RowAlignment,
     compare_batch,
     diff_batch,
     diff_count_batch,
@@ -968,3 +969,162 @@ class TestComparison:
         merged = cmp.clusters(min_pixels=1, dilation=0, merge_gap=60, merge_overlap=0.5)
         assert len(merged.clusters) == 2
         assert all(c.merged_from == 1 for c in merged.clusters)
+
+
+# -- Row alignment -----------------------------------------------------------
+
+
+def page_rgba(width: int, height: int) -> bytes:
+    """A bordered page whose rows all differ, so every row can act as an anchor."""
+    raw = bytearray(width * height * 4)
+    for y in range(height):
+        for x in range(width):
+            idx = (y * width + x) * 4
+            if x < 2 or x + 2 >= width or y < 2 or y + 2 >= height:
+                raw[idx : idx + 4] = bytes((30, 30, 30, 255))
+            else:
+                raw[idx : idx + 4] = bytes(
+                    (
+                        (x * 3 + y * 97) % 256,
+                        (y * 71 + 40) % 256,
+                        (x * 11 + y * 53) % 256,
+                        255,
+                    )
+                )
+    return bytes(raw)
+
+
+def with_inserted_row(
+    raw: bytes, width: int, height: int, at: int, color: tuple[int, int, int, int]
+) -> bytes:
+    stride = width * 4
+    return raw[: at * stride] + bytes(color) * width + raw[at * stride :]
+
+
+def with_block(
+    raw: bytes, width: int, x0: int, y0: int, size: int, color: tuple[int, int, int, int]
+) -> bytes:
+    out = bytearray(raw)
+    for y in range(y0, y0 + size):
+        for x in range(x0, x0 + size):
+            idx = (y * width + x) * 4
+            out[idx : idx + 4] = bytes(color)
+    return bytes(out)
+
+
+class TestRowAlignment:
+    width = 60
+    height = 120
+    at = 40
+
+    def shifted_pair(self, current_raw: bytes | None = None) -> Comparison:
+        """Baseline page against the same page with one extra row at `at`."""
+        baseline_raw = page_rgba(self.width, self.height)
+        if current_raw is None:
+            current_raw = with_inserted_row(
+                baseline_raw, self.width, self.height, self.at, (255, 0, 255, 255)
+            )
+        return Comparison(
+            encode_png_rgba(baseline_raw, self.width, self.height),
+            encode_png_rgba(current_raw, self.width, self.height + 1),
+        )
+
+    def test_single_inserted_row(self) -> None:
+        cmp = self.shifted_pair()
+        alignment = cmp.row_alignment()
+
+        assert isinstance(alignment, RowAlignment)
+        assert alignment.aligned is True
+        assert alignment.inserted_rows == 1
+        assert alignment.deleted_rows == 0
+        assert alignment.changed_rows == 0
+        assert alignment.residual_count == 0
+        assert [(b.kind, b.y, b.rows) for b in alignment.bands] == [
+            ("inserted", self.at, 1)
+        ]
+        # Top-aligned diffing flags the whole page below the inserted row.
+        assert cmp.diff_count() > 1000
+
+    def test_aligned_diff_image_marks_the_band_only(self) -> None:
+        cmp = self.shifted_pair()
+        alignment = cmp.row_alignment()
+
+        with Image.open(io.BytesIO(cmp.aligned_diff_image(alignment))) as img:
+            rgb = img.convert("RGB")
+            assert rgb.size == (self.width, self.height + 1)
+            pixels = rgb.tobytes()
+
+        stride = self.width * 3
+        for y in range(self.height + 1):
+            row = pixels[y * stride : (y + 1) * stride]
+            is_band = row == b"\xff\x00\x00" * self.width
+            assert is_band == (y == self.at), f"row {y} band state"
+
+    def test_budget_bail_out(self) -> None:
+        baseline_raw = page_rgba(self.width, self.height)
+        stride = self.width * 4
+        # Shift the whole page one column right: no row can anchor.
+        current_raw = b"".join(
+            bytes(4) + baseline_raw[y * stride : (y + 1) * stride - 4]
+            for y in range(self.height)
+        )
+        cmp = Comparison(
+            encode_png_rgba(baseline_raw, self.width, self.height),
+            encode_png_rgba(current_raw, self.width, self.height),
+        )
+
+        alignment = cmp.row_alignment()
+        assert alignment.aligned is False
+        assert alignment.segments == []
+        assert alignment.bands == []
+        with pytest.raises(ValueError):
+            cmp.aligned_diff_image(alignment)
+        with pytest.raises(ValueError):
+            cmp.aligned_ssim(alignment)
+
+    def test_aligned_ssim_ignores_the_shift(self) -> None:
+        cmp = self.shifted_pair()
+        alignment = cmp.row_alignment()
+
+        assert cmp.aligned_ssim(alignment) > 0.99
+        assert cmp.ssim() < 0.9
+
+    def test_aligned_ssim_still_sees_a_changed_block(self) -> None:
+        baseline_raw = page_rgba(self.width, self.height)
+        current_raw = with_block(
+            with_inserted_row(
+                baseline_raw, self.width, self.height, self.at, (255, 0, 255, 255)
+            ),
+            self.width,
+            10,
+            70,
+            30,
+            (255, 0, 0, 255),
+        )
+        cmp = self.shifted_pair(current_raw)
+        alignment = cmp.row_alignment()
+
+        assert alignment.inserted_rows == 1
+        assert alignment.changed_rows == 30
+        assert cmp.aligned_ssim(alignment) < 0.99
+
+    def test_aligned_clusters_report_the_changed_block_only(self) -> None:
+        baseline_raw = page_rgba(self.width, self.height)
+        current_raw = with_block(
+            with_inserted_row(
+                baseline_raw, self.width, self.height, self.at, (255, 0, 255, 255)
+            ),
+            self.width,
+            10,
+            70,
+            30,
+            (255, 0, 0, 255),
+        )
+        cmp = self.shifted_pair(current_raw)
+        alignment = cmp.row_alignment()
+
+        clusters = cmp.aligned_clusters(alignment, min_pixels=1, dilation=0)
+        assert len(clusters.clusters) == 1
+        bbox = clusters.clusters[0].bbox
+        assert (bbox.x, bbox.y) == (10, 70)
+        assert (bbox.width, bbox.height) == (30, 30)

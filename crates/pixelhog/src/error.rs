@@ -40,6 +40,10 @@ pub enum Error {
     #[error("failed to resize image: {0}")]
     Resize(String),
 
+    /// Row alignment failed, so there is nothing to render or score.
+    #[error("images could not be row-aligned")]
+    NotAligned,
+
     /// WebP encoding failed.
     #[error("failed to encode WebP: {0}")]
     EncodeWebp(image::ImageError),
