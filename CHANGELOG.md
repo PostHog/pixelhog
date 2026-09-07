@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.3.0
+
+**Row alignment.** New `row_alignment()` tells a vertical shift from a real change. It hashes
+every pixel row, keeps only rows rare enough to trust as anchors (Happo's rule: a hash occurring
+more than `max_row_occurrences` times, default 20, never matches), and runs a budgeted Myers
+O(ND) diff over the resulting tokens. The result reports `inserted_rows`, `deleted_rows`,
+`changed_rows`, and `residual_count` — the pixels that still differ once the shift is taken out.
+A screenshot pair that grew by one row reads as 1 inserted row and a handful of anti-aliased
+residual pixels instead of a few percent of the page.
+
+**Shift bands.** `RowAlignment.bands` lists inserted and deleted row bands in current-image
+coordinates, so they overlay the current screenshot directly. Bands are deliberately kept out of
+the cluster mask — a one-row band would not survive `min_side`, so callers read `bands`.
+
+**Budget bail-out.** `max_edit_ratio` (default 0.25) and `max_edit_rows` (default 2048) cap the
+edit distance. When a pair is too different to align (a re-layout, a different page), the result
+comes back with `aligned = False` and empty fields rather than burning time on an O(ND) walk.
+`aligned_diff_image()` and `aligned_ssim()` raise in that case; `aligned_clusters()` returns
+nothing.
+
+**Aligned diff image, clusters, and SSIM.** `aligned_diff_image()` renders the diff in
+current-image coordinates: grayed rows for matched content, pixelmatch coloring for rows that
+really changed, filled bands where rows were added, and a seam row (in `diff_color_alt` when set)
+where rows were removed. `aligned_clusters()` clusters the residual only. `aligned_ssim()` scores
+the matched rows only, so a one-row insert no longer drags the score down.
+
 ## 1.2.0
 
 **Spatial clustering.** New `clusters()` method returns connected-component regions of

@@ -56,6 +56,10 @@ thumb = thumbnail(current_png, width=200, height=150)
 | `.diff_count_capped(max_diffs, ...)` | `int` | Early-exit count |
 | `.ssim()` | `float` | Structural similarity |
 | `.clusters(dilation, merge_gap, ...)` | `ClustersResult` | Spatial regions of change |
+| `.row_alignment(...)` | `RowAlignment` | Separate a vertical shift from real changes |
+| `.aligned_clusters(alignment, ...)` | `ClustersResult` | Clusters of the residual only |
+| `.aligned_ssim(alignment)` | `float` | SSIM over the matched rows only |
+| `.aligned_diff_image(alignment, ...)` | `bytes` (PNG) | Shift-aware diff visualization |
 | `.diff_image(...)` | `bytes` (PNG) | Diff visualization |
 | `.current_thumbnail(width, height, ...)` | `bytes` (WebP) | Thumbnail of current image |
 | `.baseline_thumbnail(width, height, ...)` | `bytes` (WebP) | Thumbnail of baseline image |
@@ -71,6 +75,39 @@ thumb = thumbnail(current_png, width=200, height=150)
 | `ssim_batch` | `list[(baseline, current)]` | `list[float]` | Parallel SSIM |
 | `compare_batch` | `list[(baseline, current)]` | `list[CompareResult]` | Parallel combined metrics |
 
+## Row alignment (vertical shifts)
+
+A panel grows by a pixel, a banner is inserted, a list gains a row — everything below moves down.
+A top-aligned pixel diff then flags most of the page and SSIM reports large dissimilarity, even
+though nothing else changed. `row_alignment()` hashes each pixel row, keeps the rows rare enough
+to trust as anchors, and runs a budgeted Myers diff over them.
+
+```python
+cmp = Comparison(baseline_png, current_png)
+alignment = cmp.row_alignment()
+
+if alignment.aligned:
+    print(alignment.inserted_rows, alignment.deleted_rows, alignment.residual_count)
+    for band in alignment.bands:
+        print(band.kind, band.y, band.rows)      # "inserted" / "deleted", current-image rows
+
+    clusters = cmp.aligned_clusters(alignment)   # clusters of the residual only
+    score = cmp.aligned_ssim(alignment)          # SSIM over the matched rows only
+    png = cmp.aligned_diff_image(alignment)      # diff image in current-image coordinates
+```
+
+| Field | Meaning |
+|---|---|
+| `aligned` | False when the pair was too different to align. Every other field is then zero or empty, and `aligned_diff_image()` / `aligned_ssim()` raise. |
+| `inserted_rows` / `deleted_rows` | Rows the current image gained or lost — the shift itself. |
+| `changed_rows` | Rows present in both images whose content differs. |
+| `residual_count` | Differing pixels inside those changed rows. This is the number to threshold on: it excludes the shift. |
+| `bands` | Where the shift happened, in current-image coordinates. A deleted band is the seam row the removed rows left behind. |
+
+Shift bands are not part of the cluster mask — a one-row band would be dropped by `min_side`, so
+read `alignment.bands` directly. Tune the bail-out with `max_edit_ratio` (default 0.25) and
+`max_edit_rows` (default 2048), and the anchor filter with `max_row_occurrences` (default 20).
+
 ## Behavior
 
 - `Comparison` decodes PNG bytes once at construction; methods compute on demand.
@@ -78,6 +115,7 @@ thumb = thumbnail(current_png, width=200, height=150)
 - Smaller images are padded to the larger dimensions with transparent pixels.
 - SSIM uses 11×11 uniform windows with reflect padding; falls back to global for tiny images.
 - Clustering uses morphological dilation + two-pass CCL with optional aligned-bbox merge.
+- Row alignment hashes rows, filters frequent hashes out as anchors, then runs a budgeted Myers diff.
 
 ## Correctness and tests
 
