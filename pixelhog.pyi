@@ -169,7 +169,6 @@ class Comparison:
         include_aa: bool = False,
         max_edit_ratio: float = 0.25,
         max_edit_rows: int = 2048,
-        max_row_occurrences: int = 20,
     ) -> RowAlignment: ...
     def aligned_clusters(
         self,

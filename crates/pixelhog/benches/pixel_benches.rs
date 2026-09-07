@@ -515,7 +515,7 @@ fn bench_row_alignment(c: &mut Criterion) {
         });
     }
 
-    // Nothing anchors, so the edit budget is exhausted and alignment bails out.
+    // No row hash matches, so the edit budget is exhausted and alignment bails out.
     let (width, height) = (1920, 1080);
     let (baseline, current) = make_screenshot_pair_rgba(width, height);
     let mut shifted = vec![0u8; current.len()];

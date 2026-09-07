@@ -371,8 +371,7 @@ fn test_clusters_identical_images_empty() {
 
 // -- Row alignment -----------------------------------------------------------
 
-/// A page with a border and per-row content, so rows hash distinctly and the
-/// anchor filter has anchors to work with.
+/// A page with a border and per-row content, so every row hashes distinctly.
 fn page_rgba(width: usize, height: usize) -> Vec<u8> {
     let mut rgba = vec![0u8; width * height * 4];
     for y in 0..height {
@@ -536,7 +535,7 @@ fn test_row_alignment_bails_out_when_every_row_differs() {
     let baseline = page_rgba(width, height);
     let mut current = vec![0u8; baseline.len()];
 
-    // Shift the whole page one column to the right: no row can anchor.
+    // Shift the whole page one column to the right: no row hash survives.
     let stride = width * 4;
     for y in 0..height {
         let row = &baseline[y * stride..(y + 1) * stride];

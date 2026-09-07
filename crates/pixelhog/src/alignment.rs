@@ -3,9 +3,18 @@
 //! A one-pixel panel growth or an inserted banner moves everything below it
 //! down. A top-aligned pixel diff then flags most of the page and SSIM reports
 //! large dissimilarity, even though nothing else changed. This module hashes
-//! each pixel row, keeps the rows that are rare enough to trust as anchors, and
-//! runs a budgeted Myers diff over those tokens. What comes back separates rows
+//! each pixel row and runs a Myers diff over the hashes, which separates rows
 //! that only moved from rows whose content really changed.
+//!
+//! Two guards shape the result. The edit budget bounds the O(ND) walk: a pair
+//! too different to align gives up instead of running to completion. Replace
+//! pairing turns an adjacent delete and insert back into a content change, so
+//! anti-aliasing jitter on a text row is not reported as a shift.
+//!
+//! Rows repeated across the page (blank background, rules, spacers) need no
+//! special handling. Myers minimizes edits, so it matches them by position:
+//! pairing the nth blank row with the nth blank row costs nothing, while any
+//! other pairing costs a delete and an insert.
 
 use crate::clusters::{compute_clusters, ClusterOptions, ClustersOutput};
 use crate::image_utils::encode_png;
@@ -17,7 +26,6 @@ use crate::ssim::compute_ssim_rgba;
 use crate::Error;
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 /// Options for row alignment.
@@ -26,8 +34,6 @@ pub struct RowAlignmentOptions {
     pub max_edit_ratio: f64,
     /// Hard cap on the edit budget, whatever the image height.
     pub max_edit_rows: usize,
-    /// A row hash occurring more often than this in either image is never an anchor.
-    pub max_row_occurrences: usize,
 }
 
 impl Default for RowAlignmentOptions {
@@ -35,7 +41,6 @@ impl Default for RowAlignmentOptions {
         Self {
             max_edit_ratio: 0.25,
             max_edit_rows: 2048,
-            max_row_occurrences: 20,
         }
     }
 }
@@ -140,72 +145,6 @@ fn hash_rows(rgba: &[u8], stride: usize, rows: usize) -> Vec<u64> {
         .par_chunks_exact(stride)
         .map(hash_row)
         .collect()
-}
-
-fn count_hashes(hashes: &[u64]) -> HashMap<u64, usize> {
-    let mut counts = HashMap::with_capacity(hashes.len());
-    for hash in hashes {
-        *counts.entry(*hash).or_insert(0) += 1;
-    }
-    counts
-}
-
-fn assign_tokens(hashes: &[u64], anchors: &HashMap<u64, u64>, next_token: &mut u64) -> Vec<u64> {
-    hashes
-        .iter()
-        .map(|hash| match anchors.get(hash) {
-            Some(token) => *token,
-            None => {
-                // A row that cannot anchor gets a token nothing else shares.
-                let token = *next_token;
-                *next_token += 1;
-                token
-            }
-        })
-        .collect()
-}
-
-/// Pick the row hashes that may match, one shared token each.
-///
-/// A hash that repeats often (blank rows, plain backgrounds) would let the diff
-/// pair up unrelated parts of the page, so it is left out.
-fn anchor_hashes(
-    baseline_counts: &HashMap<u64, usize>,
-    current_counts: &HashMap<u64, usize>,
-    max_occurrences: usize,
-) -> HashMap<u64, u64> {
-    let mut anchors = HashMap::new();
-    for (hash, baseline_count) in baseline_counts {
-        let anchorable = *baseline_count <= max_occurrences
-            && current_counts
-                .get(hash)
-                .is_some_and(|count| *count <= max_occurrences);
-        if anchorable {
-            anchors.insert(*hash, anchors.len() as u64);
-        }
-    }
-    anchors
-}
-
-/// Rows that no anchor can match, so the diff has to delete or insert each one.
-fn forced_edits(
-    baseline_hashes: &[u64],
-    current_hashes: &[u64],
-    anchors: &HashMap<u64, u64>,
-) -> usize {
-    let unanchored = |hashes: &[u64]| hashes.iter().filter(|h| !anchors.contains_key(h)).count();
-    unanchored(baseline_hashes) + unanchored(current_hashes)
-}
-
-fn tokenize_rows(
-    baseline_hashes: &[u64],
-    current_hashes: &[u64],
-    anchors: &HashMap<u64, u64>,
-) -> (Vec<u64>, Vec<u64>) {
-    let mut next_token = anchors.len() as u64;
-    let baseline_tokens = assign_tokens(baseline_hashes, anchors, &mut next_token);
-    let current_tokens = assign_tokens(current_hashes, anchors, &mut next_token);
-    (baseline_tokens, current_tokens)
 }
 
 /// One row-level edit, before consecutive edits are merged into runs.
@@ -478,25 +417,7 @@ pub fn compute_row_alignment(
     let budget = (options.max_edit_ratio * total_rows as f64).ceil().max(0.0) as usize;
     let max_d = budget.min(options.max_edit_rows);
 
-    let baseline_counts = count_hashes(&baseline_hashes);
-    let current_counts = count_hashes(&current_hashes);
-    let mut anchors = anchor_hashes(
-        &baseline_counts,
-        &current_counts,
-        options.max_row_occurrences,
-    );
-
-    // A page with a large blank area repeats one row hundreds of times. Refusing
-    // to match those rows would spend the whole budget before the real edits are
-    // reached, so let every identical row match rather than give up on the page.
-    if forced_edits(&baseline_hashes, &current_hashes, &anchors) > max_d {
-        anchors = anchor_hashes(&baseline_counts, &current_counts, usize::MAX);
-    }
-
-    let (baseline_tokens, current_tokens) =
-        tokenize_rows(&baseline_hashes, &current_hashes, &anchors);
-
-    let Some((edit_distance, runs)) = myers_diff(&baseline_tokens, &current_tokens, max_d) else {
+    let Some((edit_distance, runs)) = myers_diff(&baseline_hashes, &current_hashes, max_d) else {
         return Ok(RowAlignment::unaligned());
     };
 
@@ -810,43 +731,24 @@ mod tests {
         assert!(myers_diff(&baseline, &current, 8).is_none());
     }
 
-    fn tokens(baseline: &[u64], current: &[u64], max_occurrences: usize) -> (Vec<u64>, Vec<u64>) {
-        let anchors = anchor_hashes(
-            &count_hashes(baseline),
-            &count_hashes(current),
-            max_occurrences,
-        );
-        tokenize_rows(baseline, current, &anchors)
-    }
-
     #[test]
-    fn frequent_rows_never_anchor() {
-        let mut baseline = vec![7u64; 25];
-        baseline.push(42);
-        let current = baseline.clone();
-
-        let (baseline_tokens, current_tokens) = tokens(&baseline, &current, 20);
-
-        // The blank row repeats too often to anchor; the rare row still matches.
-        for (a, b) in baseline_tokens[..25].iter().zip(&current_tokens[..25]) {
-            assert_ne!(a, b);
-        }
-        assert_eq!(baseline_tokens[25], current_tokens[25]);
-    }
-
-    #[test]
-    fn dropping_the_anchor_filter_is_what_makes_a_repetitive_page_alignable() {
+    fn repeated_rows_match_by_position() {
+        // A page that is mostly blank background, with one row inserted into it.
         let mut baseline = vec![7u64; 25];
         baseline.push(42);
         let mut current = baseline.clone();
         current.insert(10, 43);
 
-        let filtered = tokens(&baseline, &current, 20);
-        assert!(myers_diff(&filtered.0, &filtered.1, 12).is_none());
+        let (edit_distance, segments) = segments_of(&baseline, &current, 12);
 
-        let unfiltered = tokens(&baseline, &current, usize::MAX);
-        let (edit_distance, _) =
-            myers_diff(&unfiltered.0, &unfiltered.1, 12).expect("diff should fit the budget");
         assert_eq!(edit_distance, 1);
+        assert_eq!(
+            segments,
+            vec![
+                segment(RowSegmentKind::Equal, 0, 0, 10),
+                segment(RowSegmentKind::Insert, 10, 10, 1),
+                segment(RowSegmentKind::Equal, 10, 11, 16),
+            ]
+        );
     }
 }

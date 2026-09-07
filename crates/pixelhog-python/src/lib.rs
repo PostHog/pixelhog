@@ -695,7 +695,7 @@ impl ComparisonPy {
     ///
     /// `aligned` is False when the edit budget was exceeded; every other field
     /// is then zero or empty.
-    #[pyo3(signature = (threshold = 0.1, include_aa = false, max_edit_ratio = 0.25, max_edit_rows = 2048, max_row_occurrences = 20))]
+    #[pyo3(signature = (threshold = 0.1, include_aa = false, max_edit_ratio = 0.25, max_edit_rows = 2048))]
     fn row_alignment(
         &self,
         py: Python<'_>,
@@ -703,13 +703,11 @@ impl ComparisonPy {
         include_aa: bool,
         max_edit_ratio: f64,
         max_edit_rows: usize,
-        max_row_occurrences: usize,
     ) -> PyResult<Py<RowAlignmentPy>> {
         let options = pixelmatch_count_options(threshold, include_aa)?;
         let alignment_opts = RowAlignmentOptions {
             max_edit_ratio,
             max_edit_rows,
-            max_row_occurrences,
         };
         let alignment = py
             .allow_threads(|| self.inner.row_alignment(&options, &alignment_opts))

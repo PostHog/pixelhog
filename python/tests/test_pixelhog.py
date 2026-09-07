@@ -975,7 +975,7 @@ class TestComparison:
 
 
 def page_rgba(width: int, height: int) -> bytes:
-    """A bordered page whose rows all differ, so every row can act as an anchor."""
+    """A bordered page whose rows all differ, so every row hashes distinctly."""
     raw = bytearray(width * height * 4)
     for y in range(height):
         for x in range(width):
@@ -1063,7 +1063,7 @@ class TestRowAlignment:
     def test_budget_bail_out(self) -> None:
         baseline_raw = page_rgba(self.width, self.height)
         stride = self.width * 4
-        # Shift the whole page one column right: no row can anchor.
+        # Shift the whole page one column right: no row hash survives.
         current_raw = b"".join(
             bytes(4) + baseline_raw[y * stride : (y + 1) * stride - 4]
             for y in range(self.height)

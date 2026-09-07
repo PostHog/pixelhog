@@ -79,8 +79,8 @@ thumb = thumbnail(current_png, width=200, height=150)
 
 A panel grows by a pixel, a banner is inserted, a list gains a row — everything below moves down.
 A top-aligned pixel diff then flags most of the page and SSIM reports large dissimilarity, even
-though nothing else changed. `row_alignment()` hashes each pixel row, keeps the rows rare enough
-to trust as anchors, and runs a budgeted Myers diff over them.
+though nothing else changed. `row_alignment()` hashes each pixel row and runs a budgeted Myers
+diff over the hashes.
 
 ```python
 cmp = Comparison(baseline_png, current_png)
@@ -106,7 +106,7 @@ if alignment.aligned:
 
 Shift bands are not part of the cluster mask — a one-row band would be dropped by `min_side`, so
 read `alignment.bands` directly. Tune the bail-out with `max_edit_ratio` (default 0.25) and
-`max_edit_rows` (default 2048), and the anchor filter with `max_row_occurrences` (default 20).
+`max_edit_rows` (default 2048).
 
 ## Behavior
 
@@ -115,7 +115,7 @@ read `alignment.bands` directly. Tune the bail-out with `max_edit_ratio` (defaul
 - Smaller images are padded to the larger dimensions with transparent pixels.
 - SSIM uses 11×11 uniform windows with reflect padding; falls back to global for tiny images.
 - Clustering uses morphological dilation + two-pass CCL with optional aligned-bbox merge.
-- Row alignment hashes rows, filters frequent hashes out as anchors, then runs a budgeted Myers diff.
+- Row alignment hashes rows and runs a budgeted Myers diff over the hashes.
 
 ## Correctness and tests
 
