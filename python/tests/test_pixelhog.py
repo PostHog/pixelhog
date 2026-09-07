@@ -1081,6 +1081,8 @@ class TestRowAlignment:
             cmp.aligned_diff_image(alignment)
         with pytest.raises(ValueError):
             cmp.aligned_ssim(alignment)
+        with pytest.raises(ValueError):
+            cmp.aligned_clusters(alignment)
 
     def test_aligned_ssim_ignores_the_shift(self) -> None:
         cmp = self.shifted_pair()
@@ -1128,3 +1130,37 @@ class TestRowAlignment:
         bbox = clusters.clusters[0].bbox
         assert (bbox.x, bbox.y) == (10, 70)
         assert (bbox.width, bbox.height) == (30, 30)
+
+    def test_width_change_is_not_alignable(self) -> None:
+        baseline = encode_png_rgba(
+            page_rgba(self.width, self.height), self.width, self.height
+        )
+        narrower = encode_png_rgba(
+            page_rgba(self.width - 10, self.height), self.width - 10, self.height
+        )
+
+        alignment = Comparison(baseline, narrower).row_alignment()
+        assert alignment.aligned is False
+
+    def test_alignment_from_another_pair_is_rejected(self) -> None:
+        cmp = self.shifted_pair()
+        alignment = cmp.row_alignment()
+
+        taller_raw = page_rgba(self.width, self.height + 20)
+        taller = Comparison(
+            encode_png_rgba(taller_raw, self.width, self.height + 20),
+            encode_png_rgba(taller_raw, self.width, self.height + 20),
+        )
+
+        with pytest.raises(ValueError):
+            taller.aligned_diff_image(alignment)
+        with pytest.raises(ValueError):
+            taller.aligned_ssim(alignment)
+        with pytest.raises(ValueError):
+            taller.aligned_clusters(alignment)
+
+    def test_edit_ratio_out_of_range_is_rejected(self) -> None:
+        cmp = self.shifted_pair()
+
+        with pytest.raises(ValueError):
+            cmp.row_alignment(max_edit_ratio=1.5)

@@ -15,18 +15,21 @@
 //! special handling. Myers minimizes edits, so it matches them by position:
 //! pairing the nth blank row with the nth blank row costs nothing, while any
 //! other pairing costs a delete and an insert.
+//!
+//! Alignment is vertical only. Two images of different widths have no row in
+//! common by construction, so a width change disqualifies the pair.
 
 use crate::clusters::{compute_clusters, ClusterOptions, ClustersOutput};
 use crate::image_utils::encode_png;
 use crate::pixelmatch::{
-    draw_pixel, gray_pixel_value, pixelmatch_count_rgba, pixelmatch_mask_rgba, pixelmatch_rgba,
-    validate_options, PixelmatchOptions, PixelmatchOutput,
+    draw_pixel, gray_pixel_value, pixelmatch_mask_rgba, pixelmatch_rgba, validate_options,
+    PixelmatchOptions, PixelmatchOutput,
 };
 use crate::ssim::compute_ssim_rgba;
 use crate::Error;
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 
 /// Options for row alignment.
 pub struct RowAlignmentOptions {
@@ -77,7 +80,9 @@ pub enum ShiftBandKind {
 /// A band of rows that shifted the content below it, in current-image coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShiftBand {
-    /// Top row of an inserted band, or the seam row for a deleted one.
+    /// Top row of an inserted band, or the seam row for a deleted one. Rows
+    /// removed from the bottom of the page leave their seam past the last row,
+    /// so this can equal the current image height.
     pub y: usize,
     pub rows: usize,
     pub kind: ShiftBandKind,
@@ -86,9 +91,9 @@ pub struct ShiftBand {
 /// Result of aligning the rows of two images.
 #[derive(Debug, Clone)]
 pub struct RowAlignment {
-    /// False when the edit budget was exceeded; every other field is then zero or empty.
+    /// False when the pair could not be aligned; every other field is then zero or empty.
     pub aligned: bool,
-    /// Myers edit distance over the row tokens.
+    /// Myers edit distance over the row hashes.
     pub edit_distance: usize,
     pub inserted_rows: usize,
     pub deleted_rows: usize,
@@ -98,10 +103,15 @@ pub struct RowAlignment {
     pub residual_count: usize,
     pub segments: Vec<RowSegment>,
     pub bands: Vec<ShiftBand>,
+    // Row indices only mean something for the pair they were computed from, so
+    // the aligned_* calls refuse an alignment from a differently sized pair.
+    width: usize,
+    baseline_height: usize,
+    current_height: usize,
 }
 
 impl RowAlignment {
-    fn unaligned() -> Self {
+    fn unaligned(images: &RowImages) -> Self {
         Self {
             aligned: false,
             edit_distance: 0,
@@ -111,6 +121,9 @@ impl RowAlignment {
             residual_count: 0,
             segments: Vec::new(),
             bands: Vec::new(),
+            width: images.width,
+            baseline_height: images.baseline_height,
+            current_height: images.current_height,
         }
     }
 }
@@ -118,20 +131,43 @@ impl RowAlignment {
 /// The image pair as rows over a shared stride.
 ///
 /// `width` is the padded width both buffers were stored at, so a row is always
-/// `width * 4` bytes. `current_width` is the unpadded width of the current
-/// image, which is what the diff image and the cluster mask are sized to.
+/// `width * 4` bytes. The unpadded widths decide whether the pair can be
+/// aligned at all; once it can, all three are the same number.
 pub struct RowImages<'a> {
     pub baseline_rgba: &'a [u8],
     pub current_rgba: &'a [u8],
     pub width: usize,
+    pub baseline_width: usize,
     pub baseline_height: usize,
     pub current_width: usize,
     pub current_height: usize,
 }
 
+/// Hash a row by the pixels it renders as.
+///
+/// A fully transparent pixel reads as zero whatever its RGB, which is how
+/// pixelmatch sees it: two of them never differ, so two rows that differ only
+/// under full transparency are the same row.
 fn hash_row(row: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
-    row.hash(&mut hasher);
+
+    // Screenshots are opaque almost everywhere, and hashing a row in one go is
+    // several times faster than feeding it a pixel at a time. Whether a row has
+    // a transparent pixel is a property of that row, so both images take the
+    // same path for the same content.
+    if row.chunks_exact(4).any(|pixel| pixel[3] == 0) {
+        for pixel in row.chunks_exact(4) {
+            let rendered = if pixel[3] == 0 {
+                0
+            } else {
+                u32::from_ne_bytes([pixel[0], pixel[1], pixel[2], pixel[3]])
+            };
+            hasher.write_u32(rendered);
+        }
+    } else {
+        hasher.write(row);
+    }
+
     hasher.finish()
 }
 
@@ -268,6 +304,84 @@ fn myers_diff(baseline: &[u64], current: &[u64], max_d: usize) -> Option<(usize,
     None
 }
 
+/// The hash every row in the range shares, or `None` when they differ.
+fn uniform_hash(hashes: &[u64], start: usize, len: usize) -> Option<u64> {
+    let first = *hashes.get(start)?;
+    hashes[start..start + len]
+        .iter()
+        .all(|hash| *hash == first)
+        .then_some(first)
+}
+
+/// True when both ranges are one repeated row and it is the same row.
+fn interchangeable(
+    hashes: &[u64],
+    a_start: usize,
+    a_len: usize,
+    b_start: usize,
+    b_len: usize,
+) -> bool {
+    match (
+        uniform_hash(hashes, a_start, a_len),
+        uniform_hash(hashes, b_start, b_len),
+    ) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Slide an edit across a run of rows it cannot be told apart from.
+///
+/// Inside a block of identical rows Myers may put the delete at one end and the
+/// insert at the other, at the same cost. A replaced line in a uniform block
+/// then reads as a two-row shift with no residual, hiding the real change.
+/// Moving the second edit to the near side of the block puts the two back
+/// together, and `pair_replacements` turns them into the `Replace` they are.
+fn slide_edits_together(runs: &mut [EditRun], baseline_hashes: &[u64], current_hashes: &[u64]) {
+    for index in 0..runs.len().saturating_sub(2) {
+        let (first, middle, last) = (runs[index], runs[index + 1], runs[index + 2]);
+        if middle.op != EditOp::Equal {
+            continue;
+        }
+
+        let slidable = match (first.op, last.op) {
+            (EditOp::Insert, EditOp::Delete) => interchangeable(
+                baseline_hashes,
+                middle.baseline_start,
+                middle.len,
+                last.baseline_start,
+                last.len,
+            ),
+            (EditOp::Delete, EditOp::Insert) => interchangeable(
+                current_hashes,
+                middle.current_start,
+                middle.len,
+                last.current_start,
+                last.len,
+            ),
+            _ => false,
+        };
+
+        if !slidable {
+            continue;
+        }
+
+        // The edit takes over where the equal run began, and the equal run
+        // moves down by however many rows the edit consumes.
+        runs[index + 1] = EditRun {
+            baseline_start: middle.baseline_start,
+            current_start: middle.current_start,
+            ..last
+        };
+        runs[index + 2] = EditRun {
+            baseline_start: middle.baseline_start
+                + usize::from(last.op == EditOp::Delete) * last.len,
+            current_start: middle.current_start + usize::from(last.op == EditOp::Insert) * last.len,
+            ..middle
+        };
+    }
+}
+
 fn segment(
     kind: RowSegmentKind,
     baseline_start: usize,
@@ -354,8 +468,7 @@ fn pair_replacements(runs: &[EditRun]) -> Vec<RowSegment> {
 }
 
 /// Bands sit in current-image coordinates so they overlay the current screenshot.
-fn shift_bands(segments: &[RowSegment], current_height: usize) -> Vec<ShiftBand> {
-    let last_row = current_height.saturating_sub(1);
+fn shift_bands(segments: &[RowSegment]) -> Vec<ShiftBand> {
     segments
         .iter()
         .filter_map(|seg| match seg.kind {
@@ -366,7 +479,7 @@ fn shift_bands(segments: &[RowSegment], current_height: usize) -> Vec<ShiftBand>
             }),
             // Deleted rows have no current-image extent — mark the seam they left behind.
             RowSegmentKind::Delete => Some(ShiftBand {
-                y: seg.current_start.min(last_row),
+                y: seg.current_start,
                 rows: seg.len,
                 kind: ShiftBandKind::Deleted,
             }),
@@ -379,50 +492,128 @@ fn row_range(rgba: &[u8], stride: usize, start: usize, len: usize) -> &[u8] {
     &rgba[start * stride..(start + len) * stride]
 }
 
+/// A `Replace` segment widened by one row of context above and below.
+///
+/// pixelmatch decides whether a pixel is anti-aliased from its neighbours, so a
+/// segment diffed on its own has none beyond its edges and reports the fringe of
+/// a text row as a real change. Context rows are only there to be looked at —
+/// callers take the segment's own rows back out at `lead`.
+struct SegmentWindow<'a> {
+    baseline: &'a [u8],
+    current: &'a [u8],
+    rows: usize,
+    lead: usize,
+}
+
+fn segment_window<'a>(images: &RowImages<'a>, seg: &RowSegment) -> SegmentWindow<'a> {
+    let stride = images.width * 4;
+    let lead = usize::from(seg.baseline_start > 0 && seg.current_start > 0);
+    let trail = usize::from(
+        seg.baseline_start + seg.len < images.baseline_height
+            && seg.current_start + seg.len < images.current_height,
+    );
+    let rows = lead + seg.len + trail;
+
+    SegmentWindow {
+        baseline: row_range(
+            images.baseline_rgba,
+            stride,
+            seg.baseline_start - lead,
+            rows,
+        ),
+        current: row_range(images.current_rgba, stride, seg.current_start - lead, rows),
+        rows,
+        lead,
+    }
+}
+
+/// The diff mask for a segment's own rows, judged with its context.
+fn segment_mask(
+    images: &RowImages,
+    seg: &RowSegment,
+    pixel_options: &PixelmatchOptions,
+) -> Result<Vec<bool>, Error> {
+    let window = segment_window(images, seg);
+    let output = pixelmatch_mask_rgba(
+        window.baseline,
+        window.current,
+        images.width,
+        window.rows,
+        pixel_options,
+    )?;
+
+    let start = window.lead * images.width;
+    Ok(output.diff_mask[start..start + seg.len * images.width].to_vec())
+}
+
+fn mask_count(mask: &[bool]) -> usize {
+    mask.iter().filter(|differs| **differs).count()
+}
+
+fn replace_segments(segments: &[RowSegment]) -> impl Iterator<Item = &RowSegment> {
+    segments
+        .iter()
+        .filter(|seg| seg.kind == RowSegmentKind::Replace)
+}
+
 /// Count differing pixels inside the `Replace` segments only.
 fn residual_count(
     images: &RowImages,
     segments: &[RowSegment],
     pixel_options: &PixelmatchOptions,
 ) -> Result<usize, Error> {
-    let stride = images.width * 4;
     let mut total = 0;
-
-    for seg in segments
-        .iter()
-        .filter(|s| s.kind == RowSegmentKind::Replace)
-    {
-        let baseline = row_range(images.baseline_rgba, stride, seg.baseline_start, seg.len);
-        let current = row_range(images.current_rgba, stride, seg.current_start, seg.len);
-        total += pixelmatch_count_rgba(baseline, current, images.width, seg.len, pixel_options)?
-            .diff_count;
+    for seg in replace_segments(segments) {
+        total += mask_count(&segment_mask(images, seg, pixel_options)?);
     }
-
     Ok(total)
 }
 
+fn validate_alignment_options(options: &RowAlignmentOptions) -> Result<(), Error> {
+    if !options.max_edit_ratio.is_finite() || !(0.0..=1.0).contains(&options.max_edit_ratio) {
+        return Err(Error::InvalidOption(
+            "max_edit_ratio must be in the range [0.0, 1.0]",
+        ));
+    }
+
+    Ok(())
+}
+
 /// Align the rows of the two images.
+///
+/// Alignment is vertical only: a pair whose unpadded widths differ shares no
+/// row and comes back unaligned without being hashed.
 pub fn compute_row_alignment(
     images: &RowImages,
     pixel_options: &PixelmatchOptions,
     options: &RowAlignmentOptions,
 ) -> Result<RowAlignment, Error> {
     validate_options(pixel_options)?;
+    validate_alignment_options(options)?;
+
+    if images.baseline_width != images.current_width {
+        return Ok(RowAlignment::unaligned(images));
+    }
 
     let stride = images.width * 4;
     let baseline_hashes = hash_rows(images.baseline_rgba, stride, images.baseline_height);
     let current_hashes = hash_rows(images.current_rgba, stride, images.current_height);
 
     let total_rows = baseline_hashes.len() + current_hashes.len();
-    let budget = (options.max_edit_ratio * total_rows as f64).ceil().max(0.0) as usize;
-    let max_d = budget.min(options.max_edit_rows);
+    let budget = (options.max_edit_ratio * total_rows as f64).ceil() as usize;
+    // D can never exceed the combined row count, and the V array is sized from
+    // max_d, so this also keeps a large max_edit_rows from allocating for edits
+    // that cannot happen.
+    let max_d = budget.min(options.max_edit_rows).min(total_rows);
 
-    let Some((edit_distance, runs)) = myers_diff(&baseline_hashes, &current_hashes, max_d) else {
-        return Ok(RowAlignment::unaligned());
+    let Some((edit_distance, mut runs)) = myers_diff(&baseline_hashes, &current_hashes, max_d)
+    else {
+        return Ok(RowAlignment::unaligned(images));
     };
 
+    slide_edits_together(&mut runs, &baseline_hashes, &current_hashes);
     let segments = pair_replacements(&runs);
-    let bands = shift_bands(&segments, images.current_height);
+    let bands = shift_bands(&segments);
 
     let rows_of = |kind: RowSegmentKind| -> usize {
         segments
@@ -441,72 +632,70 @@ pub fn compute_row_alignment(
         residual_count: residual_count(images, &segments, pixel_options)?,
         segments,
         bands,
+        width: images.width,
+        baseline_height: images.baseline_height,
+        current_height: images.current_height,
     })
+}
+
+/// An alignment may only be used with the pair it was computed from.
+fn check_alignment(images: &RowImages, alignment: &RowAlignment) -> Result<(), Error> {
+    if !alignment.aligned {
+        return Err(Error::NotAligned);
+    }
+
+    if alignment.width != images.width
+        || alignment.baseline_height != images.baseline_height
+        || alignment.current_height != images.current_height
+    {
+        return Err(Error::AlignmentMismatch);
+    }
+
+    Ok(())
 }
 
 /// Cluster the residual — the pixels that differ inside `Replace` segments.
 ///
-/// The mask is in current-image coordinates. Shift bands are deliberately left
-/// out of it: a one-row band would be dropped by the `min_side` filter anyway,
-/// so callers read [`RowAlignment::bands`] directly.
+/// The mask is in current-image coordinates. Shift bands are not in it: the
+/// bands are the shift signal and the mask is the residual, and a caller decides
+/// separately whether to absorb a shift or flag it, reading
+/// [`RowAlignment::bands`] for that.
 pub fn aligned_clusters(
     images: &RowImages,
     alignment: &RowAlignment,
     pixel_options: &PixelmatchOptions,
     cluster_options: &ClusterOptions,
 ) -> Result<ClustersOutput, Error> {
-    if !alignment.aligned {
-        return Ok(ClustersOutput {
-            clusters: Vec::new(),
-            total_clusters: 0,
-            truncated: false,
-        });
-    }
+    check_alignment(images, alignment)?;
 
-    let stride = images.width * 4;
-    let mut mask = vec![false; images.current_width * images.current_height];
+    let width = images.width;
+    let mut mask = vec![false; width * images.current_height];
 
-    for seg in alignment
-        .segments
-        .iter()
-        .filter(|s| s.kind == RowSegmentKind::Replace)
-    {
-        let baseline = row_range(images.baseline_rgba, stride, seg.baseline_start, seg.len);
-        let current = row_range(images.current_rgba, stride, seg.current_start, seg.len);
-        let output = pixelmatch_mask_rgba(baseline, current, images.width, seg.len, pixel_options)?;
-
-        for row in 0..seg.len {
-            let src = row * images.width;
-            let dst = (seg.current_start + row) * images.current_width;
-            mask[dst..dst + images.current_width]
-                .copy_from_slice(&output.diff_mask[src..src + images.current_width]);
-        }
+    for seg in replace_segments(&alignment.segments) {
+        let segment_mask = segment_mask(images, seg, pixel_options)?;
+        let start = seg.current_start * width;
+        mask[start..start + seg.len * width].copy_from_slice(&segment_mask);
     }
 
     Ok(compute_clusters(
         &mask,
-        images.current_width,
+        width,
         images.current_height,
         cluster_options,
     ))
 }
 
-fn draw_band(
-    diff: &mut [u8],
-    current_width: usize,
-    current_height: usize,
-    band: &ShiftBand,
-    color: [u8; 3],
-) {
+fn draw_band(diff: &mut [u8], width: usize, height: usize, band: &ShiftBand, color: [u8; 3]) {
     let rows = match band.kind {
         // A deleted band has no current-image height — one seam row marks it.
         ShiftBandKind::Deleted => 1,
         ShiftBandKind::Inserted => band.rows,
     };
-    let stride = current_width * 4;
+    let stride = width * 4;
 
-    for y in band.y..(band.y + rows).min(current_height) {
-        for x in 0..current_width {
+    // Rows removed from the bottom leave their seam past the last row.
+    for y in band.y..(band.y + rows).min(height) {
+        for x in 0..width {
             draw_pixel(diff, y * stride + x * 4, color[0], color[1], color[2]);
         }
     }
@@ -522,41 +711,40 @@ pub fn aligned_diff_image_rgba(
     alignment: &RowAlignment,
     pixel_options: &PixelmatchOptions,
 ) -> Result<PixelmatchOutput, Error> {
-    if !alignment.aligned {
-        return Err(Error::NotAligned);
-    }
-
+    check_alignment(images, alignment)?;
     validate_options(pixel_options)?;
 
-    let stride = images.width * 4;
-    let out_stride = images.current_width * 4;
-    let mut diff = vec![0u8; out_stride * images.current_height];
+    let width = images.width;
+    let height = images.current_height;
+    let stride = width * 4;
+    let mut diff = vec![0u8; stride * height];
 
     // Start from the grayed current image; changed rows and bands paint over it.
-    for y in 0..images.current_height {
-        for x in 0..images.current_width {
+    for y in 0..height {
+        for x in 0..width {
             let value =
                 gray_pixel_value(images.current_rgba, y * stride + x * 4, pixel_options.alpha);
-            draw_pixel(&mut diff, y * out_stride + x * 4, value, value, value);
+            draw_pixel(&mut diff, y * stride + x * 4, value, value, value);
         }
     }
 
     let mut diff_count = 0;
-    for seg in alignment
-        .segments
-        .iter()
-        .filter(|s| s.kind == RowSegmentKind::Replace)
-    {
-        let baseline = row_range(images.baseline_rgba, stride, seg.baseline_start, seg.len);
-        let current = row_range(images.current_rgba, stride, seg.current_start, seg.len);
-        let output = pixelmatch_rgba(baseline, current, images.width, seg.len, pixel_options)?;
-        diff_count += output.diff_count;
+    for seg in replace_segments(&alignment.segments) {
+        let window = segment_window(images, seg);
+        let output = pixelmatch_rgba(
+            window.baseline,
+            window.current,
+            width,
+            window.rows,
+            pixel_options,
+        )?;
 
-        for row in 0..seg.len {
-            let src = row * stride;
-            let dst = (seg.current_start + row) * out_stride;
-            diff[dst..dst + out_stride].copy_from_slice(&output.diff_rgba[src..src + out_stride]);
-        }
+        let own_rows = window.lead * stride..(window.lead + seg.len) * stride;
+        let at = seg.current_start * stride;
+        diff[at..at + seg.len * stride].copy_from_slice(&output.diff_rgba[own_rows]);
+
+        // The window's own count includes the context rows, which are not ours.
+        diff_count += mask_count(&segment_mask(images, seg, pixel_options)?);
     }
 
     let deleted_color = pixel_options
@@ -567,20 +755,14 @@ pub fn aligned_diff_image_rgba(
             ShiftBandKind::Inserted => pixel_options.diff_color,
             ShiftBandKind::Deleted => deleted_color,
         };
-        draw_band(
-            &mut diff,
-            images.current_width,
-            images.current_height,
-            band,
-            color,
-        );
+        draw_band(&mut diff, width, height, band, color);
     }
 
     Ok(PixelmatchOutput {
         diff_rgba: diff,
         diff_count,
-        width: images.current_width,
-        height: images.current_height,
+        width,
+        height,
     })
 }
 
@@ -618,11 +800,13 @@ fn stitch_matched_rows(
 /// the originals become neighbors at the seams, so the 11×11 window picks up
 /// small artifacts there — acceptable against reporting the whole shift.
 pub fn aligned_ssim(images: &RowImages, alignment: &RowAlignment) -> Result<f64, Error> {
-    if !alignment.aligned {
-        return Err(Error::NotAligned);
-    }
+    check_alignment(images, alignment)?;
 
     let stride = images.width * 4;
+    if stride == 0 {
+        return Ok(1.0);
+    }
+
     let baseline = stitch_matched_rows(images.baseline_rgba, stride, &alignment.segments, |s| {
         s.baseline_start
     });
@@ -630,8 +814,12 @@ pub fn aligned_ssim(images: &RowImages, alignment: &RowAlignment) -> Result<f64,
         s.current_start
     });
 
-    let matched_rows = baseline.len() / stride;
-    compute_ssim_rgba(&baseline, &current, images.width, matched_rows)
+    // Nothing in common to score, the same way SSIM treats an empty image.
+    if baseline.is_empty() {
+        return Ok(1.0);
+    }
+
+    compute_ssim_rgba(&baseline, &current, images.width, baseline.len() / stride)
 }
 
 #[cfg(test)]
@@ -639,8 +827,9 @@ mod tests {
     use super::*;
 
     fn segments_of(baseline: &[u64], current: &[u64], max_d: usize) -> (usize, Vec<RowSegment>) {
-        let (edit_distance, runs) =
+        let (edit_distance, mut runs) =
             myers_diff(baseline, current, max_d).expect("diff should fit the budget");
+        slide_edits_together(&mut runs, baseline, current);
         (edit_distance, pair_replacements(&runs))
     }
 
@@ -729,6 +918,54 @@ mod tests {
         let current: Vec<u64> = (100..140).collect();
 
         assert!(myers_diff(&baseline, &current, 8).is_none());
+    }
+
+    #[test]
+    fn fully_transparent_pixels_hash_the_same_whatever_their_color() {
+        let row = [10u8, 20, 30, 255, 40, 50, 60, 0];
+        let recolored = [10u8, 20, 30, 255, 200, 210, 220, 0];
+
+        assert_eq!(hash_row(&row), hash_row(&recolored));
+    }
+
+    #[test]
+    fn a_replaced_row_inside_a_uniform_block_is_one_replace() {
+        // 100 identical rows with one of them replaced. Myers is free to delete
+        // at one end of the block and insert at the other, which would read as a
+        // shift; the edits have to come back together.
+        let baseline = vec![7u64; 100];
+        let mut current = baseline.clone();
+        current[50] = 9;
+
+        let (_, segments) = segments_of(&baseline, &current, 64);
+
+        assert_eq!(
+            segments,
+            vec![
+                segment(RowSegmentKind::Equal, 0, 0, 50),
+                segment(RowSegmentKind::Replace, 50, 50, 1),
+                segment(RowSegmentKind::Equal, 51, 51, 49),
+            ]
+        );
+    }
+
+    #[test]
+    fn edits_across_a_varied_block_stay_separate() {
+        // The rows between the two edits differ from each other, so neither edit
+        // can move through them.
+        let baseline = [1u64, 2, 3, 4];
+        let current = [9u64, 1, 2, 3];
+
+        let (_, segments) = segments_of(&baseline, &current, 12);
+
+        assert_eq!(
+            segments,
+            vec![
+                segment(RowSegmentKind::Insert, 0, 0, 1),
+                segment(RowSegmentKind::Equal, 0, 1, 3),
+                segment(RowSegmentKind::Delete, 3, 4, 1),
+            ]
+        );
     }
 
     #[test]

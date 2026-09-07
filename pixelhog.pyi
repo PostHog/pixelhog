@@ -90,6 +90,13 @@ class RowSegment:
     def len(self) -> int: ...
 
 class RowAlignment:
+    """Result of Comparison.row_alignment().
+
+    When `aligned` is False the pair could not be aligned and the aligned_*
+    methods raise ValueError. Alignment is vertical only, so a width change
+    disqualifies a pair.
+    """
+
     @property
     def aligned(self) -> bool: ...
     @property

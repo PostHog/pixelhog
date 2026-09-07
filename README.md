@@ -98,15 +98,16 @@ if alignment.aligned:
 
 | Field | Meaning |
 |---|---|
-| `aligned` | False when the pair was too different to align. Every other field is then zero or empty, and `aligned_diff_image()` / `aligned_ssim()` raise. |
+| `aligned` | False when the pair could not be aligned: too different, or a width change (alignment is vertical only). Every other field is then zero or empty, and every `aligned_*` method raises. |
 | `inserted_rows` / `deleted_rows` | Rows the current image gained or lost — the shift itself. |
 | `changed_rows` | Rows present in both images whose content differs. |
 | `residual_count` | Differing pixels inside those changed rows. This is the number to threshold on: it excludes the shift. |
 | `bands` | Where the shift happened, in current-image coordinates. A deleted band is the seam row the removed rows left behind. |
 
-Shift bands are not part of the cluster mask — a one-row band would be dropped by `min_side`, so
-read `alignment.bands` directly. Tune the bail-out with `max_edit_ratio` (default 0.25) and
-`max_edit_rows` (default 2048).
+The cluster mask holds the residual only. Shift bands are the other half of the answer, so read
+`alignment.bands` to decide whether to absorb a shift or flag it. An alignment belongs to the pair
+it was computed from; passing it to another `Comparison` raises. Tune the bail-out with
+`max_edit_ratio` (default 0.25) and `max_edit_rows` (default 2048).
 
 ## Behavior
 
@@ -115,7 +116,8 @@ read `alignment.bands` directly. Tune the bail-out with `max_edit_ratio` (defaul
 - Smaller images are padded to the larger dimensions with transparent pixels.
 - SSIM uses 11×11 uniform windows with reflect padding; falls back to global for tiny images.
 - Clustering uses morphological dilation + two-pass CCL with optional aligned-bbox merge.
-- Row alignment hashes rows and runs a budgeted Myers diff over the hashes.
+- Row alignment hashes rows and runs a budgeted Myers diff over the hashes. It is vertical only:
+  a width change makes a pair unalignable.
 
 ## Correctness and tests
 

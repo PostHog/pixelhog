@@ -44,6 +44,10 @@ pub enum Error {
     #[error("images could not be row-aligned")]
     NotAligned,
 
+    /// A row alignment was computed for a different image pair.
+    #[error("alignment does not belong to this image pair")]
+    AlignmentMismatch,
+
     /// WebP encoding failed.
     #[error("failed to encode WebP: {0}")]
     EncodeWebp(image::ImageError),

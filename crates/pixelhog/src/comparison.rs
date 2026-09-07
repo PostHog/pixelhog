@@ -198,6 +198,7 @@ impl Comparison {
             baseline_rgba: &self.baseline_rgba,
             current_rgba: &self.current_rgba,
             width: self.width,
+            baseline_width: self.baseline_width,
             baseline_height: self.baseline_height,
             current_width: self.current_width,
             current_height: self.current_height,
@@ -205,6 +206,9 @@ impl Comparison {
     }
 
     /// Align the rows of the two images to tell a vertical shift from real changes.
+    ///
+    /// Alignment is vertical only: a pair whose widths differ comes back
+    /// unaligned.
     pub fn row_alignment(
         &self,
         pixel_options: &PixelmatchOptions,
@@ -215,9 +219,9 @@ impl Comparison {
 
     /// Cluster the residual differences inside `Replace` segments.
     ///
-    /// The mask is in current-image coordinates and leaves out the shift bands —
-    /// a one-row band would not survive the `min_side` filter, so callers read
-    /// [`RowAlignment::bands`] directly.
+    /// The mask is in current-image coordinates and holds the residual only. The
+    /// shift bands are the other half of the answer: read
+    /// [`RowAlignment::bands`] to decide whether to absorb a shift or flag it.
     pub fn aligned_clusters(
         &self,
         alignment: &RowAlignment,

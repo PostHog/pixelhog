@@ -59,6 +59,22 @@ fn pixelmatch_count_options(threshold: f64, include_aa: bool) -> PyResult<Pixelm
     })
 }
 
+fn row_alignment_options(
+    max_edit_ratio: f64,
+    max_edit_rows: usize,
+) -> PyResult<RowAlignmentOptions> {
+    if !(0.0..=1.0).contains(&max_edit_ratio) {
+        return Err(PyValueError::new_err(
+            "max_edit_ratio must be in the range [0.0, 1.0]",
+        ));
+    }
+
+    Ok(RowAlignmentOptions {
+        max_edit_ratio,
+        max_edit_rows,
+    })
+}
+
 fn thumbnail_options(
     thumbnail_width: Option<usize>,
     thumbnail_height: Option<usize>,
@@ -693,8 +709,9 @@ impl ComparisonPy {
 
     /// Align the rows of the two images to tell a vertical shift from real changes.
     ///
-    /// `aligned` is False when the edit budget was exceeded; every other field
-    /// is then zero or empty.
+    /// `aligned` is False when the pair could not be aligned — the edit budget
+    /// was exceeded, or the widths differ, since alignment is vertical only.
+    /// Every other field is then zero or empty.
     #[pyo3(signature = (threshold = 0.1, include_aa = false, max_edit_ratio = 0.25, max_edit_rows = 2048))]
     fn row_alignment(
         &self,
@@ -705,10 +722,7 @@ impl ComparisonPy {
         max_edit_rows: usize,
     ) -> PyResult<Py<RowAlignmentPy>> {
         let options = pixelmatch_count_options(threshold, include_aa)?;
-        let alignment_opts = RowAlignmentOptions {
-            max_edit_ratio,
-            max_edit_rows,
-        };
+        let alignment_opts = row_alignment_options(max_edit_ratio, max_edit_rows)?;
         let alignment = py
             .allow_threads(|| self.inner.row_alignment(&options, &alignment_opts))
             .map_err(to_py_err)?;
@@ -718,7 +732,9 @@ impl ComparisonPy {
 
     /// Cluster the residual differences, ignoring the shifted rows.
     ///
-    /// Shift bands are not part of the mask — read `alignment.bands` for those.
+    /// The mask holds the residual only. The shift bands are the other half of
+    /// the answer: read `alignment.bands` to decide whether to absorb a shift or
+    /// flag it. Raises if the alignment failed or came from another image pair.
     #[pyo3(signature = (alignment, threshold = 0.1, include_aa = false, min_pixels = 16, min_side = 0, dilation = 4, max_clusters = None, merge_gap = 0, merge_overlap = 0.5))]
     fn aligned_clusters(
         &self,

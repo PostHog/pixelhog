@@ -3,7 +3,8 @@ use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder, ImageFormat};
 use pixelhog::{
     compare_png, diff_clusters_png, diff_count_png, diff_png, diff_rgba, ssim_png, ssim_rgba,
-    ClusterOptions, Comparison, PixelmatchOptions, RowAlignmentOptions, ShiftBand, ShiftBandKind,
+    ClusterOptions, Comparison, Error, PixelmatchOptions, RowAlignmentOptions, ShiftBand,
+    ShiftBandKind,
 };
 
 fn encode_png(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
@@ -371,6 +372,14 @@ fn test_clusters_identical_images_empty() {
 
 // -- Row alignment -----------------------------------------------------------
 
+fn rgba_from_luma(values: &[[u8; 3]]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|row| row.iter())
+        .flat_map(|v| [*v, *v, *v, 255])
+        .collect()
+}
+
 /// A page with a border and per-row content, so every row hashes distinctly.
 fn page_rgba(width: usize, height: usize) -> Vec<u8> {
     let mut rgba = vec![0u8; width * height * 4];
@@ -622,4 +631,142 @@ fn test_aligned_ssim_ignores_the_shift() {
 
     assert!(aligned > 0.99, "aligned ssim was {aligned}");
     assert!(aligned > plain, "plain ssim was {plain}");
+}
+
+#[test]
+fn test_row_alignment_ignores_anti_aliasing_at_a_replaced_row() {
+    // A 3x3 slope whose middle row differs only by an anti-aliased fringe pixel.
+    // Diffed on its own that row has no neighbours to judge by, so the segment
+    // has to be widened with context before pixelmatch sees it.
+    let baseline_rgba = rgba_from_luma(&[[100, 100, 200], [100, 128, 200], [100, 200, 200]]);
+    let current_rgba = rgba_from_luma(&[[100, 100, 200], [100, 160, 200], [100, 200, 200]]);
+
+    let cmp = Comparison::from_rgba(&baseline_rgba, 3, 3, &current_rgba, 3, 3).expect("comparison");
+    let options = PixelmatchOptions::default();
+    let alignment = cmp
+        .row_alignment(&options, &RowAlignmentOptions::default())
+        .expect("alignment");
+
+    assert_eq!(cmp.diff_count(&options).expect("diff count"), 0);
+    assert!(alignment.aligned);
+    assert_eq!(alignment.changed_rows, 1);
+    assert_eq!(alignment.residual_count, 0);
+}
+
+#[test]
+fn test_row_alignment_rejects_a_width_change() {
+    let baseline = page_rgba(60, 40);
+    let current = page_rgba(50, 40);
+
+    let cmp = Comparison::from_rgba(&baseline, 60, 40, &current, 50, 40).expect("comparison");
+    let alignment = cmp
+        .row_alignment(
+            &PixelmatchOptions::default(),
+            &RowAlignmentOptions::default(),
+        )
+        .expect("alignment");
+
+    assert!(!alignment.aligned);
+    assert!(alignment.segments.is_empty());
+}
+
+#[test]
+fn test_aligned_calls_reject_an_alignment_from_another_pair() {
+    let options = PixelmatchOptions::default();
+    let small = page_rgba(60, 40);
+    let large = page_rgba(60, 80);
+
+    let small_cmp = Comparison::from_rgba(&small, 60, 40, &small, 60, 40).expect("comparison");
+    let large_cmp = Comparison::from_rgba(&large, 60, 80, &large, 60, 80).expect("comparison");
+    let foreign = small_cmp
+        .row_alignment(&options, &RowAlignmentOptions::default())
+        .expect("alignment");
+
+    assert!(matches!(
+        large_cmp.aligned_diff_image_rgba(&foreign, &options),
+        Err(Error::AlignmentMismatch)
+    ));
+    assert!(matches!(
+        large_cmp.aligned_ssim(&foreign),
+        Err(Error::AlignmentMismatch)
+    ));
+    assert!(matches!(
+        large_cmp.aligned_clusters(&foreign, &options, &ClusterOptions::default()),
+        Err(Error::AlignmentMismatch)
+    ));
+}
+
+#[test]
+fn test_aligned_calls_reject_an_unaligned_result() {
+    let options = PixelmatchOptions::default();
+    let baseline = page_rgba(60, 40);
+    let current = page_rgba(50, 40);
+
+    let cmp = Comparison::from_rgba(&baseline, 60, 40, &current, 50, 40).expect("comparison");
+    let alignment = cmp
+        .row_alignment(&options, &RowAlignmentOptions::default())
+        .expect("alignment");
+
+    assert!(matches!(
+        cmp.aligned_clusters(&alignment, &options, &ClusterOptions::default()),
+        Err(Error::NotAligned)
+    ));
+    assert!(matches!(
+        cmp.aligned_diff_image_rgba(&alignment, &options),
+        Err(Error::NotAligned)
+    ));
+    assert!(matches!(
+        cmp.aligned_ssim(&alignment),
+        Err(Error::NotAligned)
+    ));
+}
+
+#[test]
+fn test_row_alignment_rejects_an_out_of_range_edit_ratio() {
+    let page = page_rgba(20, 20);
+    let cmp = Comparison::from_rgba(&page, 20, 20, &page, 20, 20).expect("comparison");
+
+    let options = RowAlignmentOptions {
+        max_edit_ratio: 1.5,
+        ..RowAlignmentOptions::default()
+    };
+
+    assert!(matches!(
+        cmp.row_alignment(&PixelmatchOptions::default(), &options),
+        Err(Error::InvalidOption(_))
+    ));
+}
+
+#[test]
+fn test_rows_deleted_from_the_bottom_leave_the_seam_past_the_last_row() {
+    let (width, height) = (12, 40);
+    let baseline = page_rgba(width, height);
+    let current = baseline[..(height - 3) * width * 4].to_vec();
+
+    let options = PixelmatchOptions::default();
+    let cmp = Comparison::from_rgba(&baseline, width, height, &current, width, height - 3)
+        .expect("comparison");
+    let alignment = cmp
+        .row_alignment(&options, &RowAlignmentOptions::default())
+        .expect("alignment");
+
+    assert!(alignment.aligned);
+    assert_eq!(
+        alignment.bands,
+        vec![ShiftBand {
+            y: height - 3,
+            rows: 3,
+            kind: ShiftBandKind::Deleted,
+        }]
+    );
+
+    // The seam has no row of its own, so nothing in the image is painted for it.
+    let diff = cmp
+        .aligned_diff_image_rgba(&alignment, &options)
+        .expect("aligned diff image");
+    assert_eq!((diff.width, diff.height), (width, height - 3));
+    let last_row = row_of(&diff.diff_rgba, width, height - 4);
+    assert!(last_row
+        .chunks_exact(4)
+        .all(|px| px[..3] != options.diff_color));
 }

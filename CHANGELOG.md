@@ -17,8 +17,9 @@ the cluster mask — a one-row band would not survive `min_side`, so callers rea
 **Budget bail-out.** `max_edit_ratio` (default 0.25) and `max_edit_rows` (default 2048) cap the
 edit distance. When a pair is too different to align (a re-layout, a different page), the result
 comes back with `aligned = False` and empty fields rather than burning time on an O(ND) walk.
-`aligned_diff_image()` and `aligned_ssim()` raise in that case; `aligned_clusters()` returns
-nothing.
+Alignment is vertical only, so a width change is unalignable for the same reason. Every
+`aligned_*` method raises on an unaligned result, and on an alignment computed for another image
+pair.
 
 **Aligned diff image, clusters, and SSIM.** `aligned_diff_image()` renders the diff in
 current-image coordinates: grayed rows for matched content, pixelmatch coloring for rows that
