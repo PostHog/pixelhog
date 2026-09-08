@@ -2,7 +2,9 @@
 
 use ::pixelhog::{
     compare_png, create_thumbnail, diff_count_png, diff_png, ssim_png, ClusterOptions,
-    Comparison as RustComparison, PixelmatchOptions, ThumbnailOptions,
+    ClustersOutput, Comparison as RustComparison, PixelmatchOptions,
+    RowAlignment as RustRowAlignment, RowAlignmentOptions, RowSegmentKind, ShiftBandKind,
+    ThumbnailOptions,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -54,6 +56,22 @@ fn pixelmatch_count_options(threshold: f64, include_aa: bool) -> PyResult<Pixelm
         threshold,
         include_aa,
         ..PixelmatchOptions::default()
+    })
+}
+
+fn row_alignment_options(
+    max_edit_ratio: f64,
+    max_edit_rows: usize,
+) -> PyResult<RowAlignmentOptions> {
+    if !(0.0..=1.0).contains(&max_edit_ratio) {
+        return Err(PyValueError::new_err(
+            "max_edit_ratio must be in the range [0.0, 1.0]",
+        ));
+    }
+
+    Ok(RowAlignmentOptions {
+        max_edit_ratio,
+        max_edit_rows,
     })
 }
 
@@ -334,6 +352,184 @@ impl ClustersResultPy {
     }
 }
 
+fn clusters_result_py(py: Python<'_>, output: ClustersOutput) -> PyResult<Py<ClustersResultPy>> {
+    let clusters = output
+        .clusters
+        .into_iter()
+        .map(|c| {
+            let bbox = Py::new(
+                py,
+                BoundingBoxPy {
+                    x: c.bbox.x,
+                    y: c.bbox.y,
+                    width: c.bbox.width,
+                    height: c.bbox.height,
+                },
+            )?;
+            Py::new(
+                py,
+                ClusterPy {
+                    bbox,
+                    pixel_count: c.pixel_count,
+                    centroid: c.centroid,
+                    merged_from: c.merged_from,
+                },
+            )
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+
+    Py::new(
+        py,
+        ClustersResultPy {
+            clusters,
+            total_clusters: output.total_clusters,
+            truncated: output.truncated,
+        },
+    )
+}
+
+#[pyclass(frozen, name = "ShiftBand")]
+struct ShiftBandPy {
+    #[pyo3(get)]
+    y: usize,
+    #[pyo3(get)]
+    rows: usize,
+    #[pyo3(get)]
+    kind: &'static str,
+}
+
+#[pymethods]
+impl ShiftBandPy {
+    fn __repr__(&self) -> String {
+        format!(
+            "ShiftBand(kind={}, y={}, rows={})",
+            self.kind, self.y, self.rows
+        )
+    }
+}
+
+#[pyclass(frozen, name = "RowSegment")]
+struct RowSegmentPy {
+    #[pyo3(get)]
+    kind: &'static str,
+    #[pyo3(get)]
+    baseline_start: usize,
+    #[pyo3(get)]
+    current_start: usize,
+    #[pyo3(get)]
+    len: usize,
+}
+
+#[pymethods]
+impl RowSegmentPy {
+    fn __repr__(&self) -> String {
+        format!(
+            "RowSegment(kind={}, baseline_start={}, current_start={}, len={})",
+            self.kind, self.baseline_start, self.current_start, self.len
+        )
+    }
+}
+
+#[pyclass(frozen, name = "RowAlignment")]
+struct RowAlignmentPy {
+    #[pyo3(get)]
+    aligned: bool,
+    #[pyo3(get)]
+    edit_distance: usize,
+    #[pyo3(get)]
+    inserted_rows: usize,
+    #[pyo3(get)]
+    deleted_rows: usize,
+    #[pyo3(get)]
+    changed_rows: usize,
+    #[pyo3(get)]
+    residual_count: usize,
+    #[pyo3(get)]
+    segments: Vec<Py<RowSegmentPy>>,
+    #[pyo3(get)]
+    bands: Vec<Py<ShiftBandPy>>,
+    // Kept so the aligned_* methods can reuse the Rust result.
+    inner: RustRowAlignment,
+}
+
+#[pymethods]
+impl RowAlignmentPy {
+    fn __repr__(&self) -> String {
+        if !self.aligned {
+            return "RowAlignment(aligned=False)".to_string();
+        }
+        format!(
+            "RowAlignment(edit_distance={}, inserted_rows={}, deleted_rows={}, changed_rows={}, residual_count={})",
+            self.edit_distance,
+            self.inserted_rows,
+            self.deleted_rows,
+            self.changed_rows,
+            self.residual_count
+        )
+    }
+}
+
+fn segment_kind_name(kind: RowSegmentKind) -> &'static str {
+    match kind {
+        RowSegmentKind::Equal => "equal",
+        RowSegmentKind::Replace => "replace",
+        RowSegmentKind::Insert => "insert",
+        RowSegmentKind::Delete => "delete",
+    }
+}
+
+fn band_kind_name(kind: ShiftBandKind) -> &'static str {
+    match kind {
+        ShiftBandKind::Inserted => "inserted",
+        ShiftBandKind::Deleted => "deleted",
+    }
+}
+
+fn row_alignment_py(py: Python<'_>, alignment: RustRowAlignment) -> PyResult<RowAlignmentPy> {
+    let segments = alignment
+        .segments
+        .iter()
+        .map(|s| {
+            Py::new(
+                py,
+                RowSegmentPy {
+                    kind: segment_kind_name(s.kind),
+                    baseline_start: s.baseline_start,
+                    current_start: s.current_start,
+                    len: s.len,
+                },
+            )
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+
+    let bands = alignment
+        .bands
+        .iter()
+        .map(|b| {
+            Py::new(
+                py,
+                ShiftBandPy {
+                    y: b.y,
+                    rows: b.rows,
+                    kind: band_kind_name(b.kind),
+                },
+            )
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+
+    Ok(RowAlignmentPy {
+        aligned: alignment.aligned,
+        edit_distance: alignment.edit_distance,
+        inserted_rows: alignment.inserted_rows,
+        deleted_rows: alignment.deleted_rows,
+        changed_rows: alignment.changed_rows,
+        residual_count: alignment.residual_count,
+        segments,
+        bands,
+        inner: alignment,
+    })
+}
+
 #[pyclass(frozen, name = "Comparison")]
 struct ComparisonPy {
     inner: RustComparison,
@@ -475,39 +671,7 @@ impl ComparisonPy {
             .allow_threads(|| self.inner.clusters(&options, &cluster_opts))
             .map_err(to_py_err)?;
 
-        let clusters: PyResult<Vec<Py<ClusterPy>>> = output
-            .clusters
-            .into_iter()
-            .map(|c| {
-                let bbox = Py::new(
-                    py,
-                    BoundingBoxPy {
-                        x: c.bbox.x,
-                        y: c.bbox.y,
-                        width: c.bbox.width,
-                        height: c.bbox.height,
-                    },
-                )?;
-                Py::new(
-                    py,
-                    ClusterPy {
-                        bbox,
-                        pixel_count: c.pixel_count,
-                        centroid: c.centroid,
-                        merged_from: c.merged_from,
-                    },
-                )
-            })
-            .collect();
-
-        Py::new(
-            py,
-            ClustersResultPy {
-                clusters: clusters?,
-                total_clusters: output.total_clusters,
-                truncated: output.truncated,
-            },
-        )
+        clusters_result_py(py, output)
     }
 
     /// Generate the diff image as PNG bytes.
@@ -541,6 +705,109 @@ impl ComparisonPy {
             .allow_threads(|| self.inner.diff_image_png(&options))
             .map_err(to_py_err)?;
         Ok(PyBytes::new(py, &png).into())
+    }
+
+    /// Align the rows of the two images to tell a vertical shift from real changes.
+    ///
+    /// `aligned` is False when the pair could not be aligned — the edit budget
+    /// was exceeded, or the widths differ, since alignment is vertical only.
+    /// Every other field is then zero or empty.
+    #[pyo3(signature = (threshold = 0.1, include_aa = false, max_edit_ratio = 0.25, max_edit_rows = 2048))]
+    fn row_alignment(
+        &self,
+        py: Python<'_>,
+        threshold: f64,
+        include_aa: bool,
+        max_edit_ratio: f64,
+        max_edit_rows: usize,
+    ) -> PyResult<Py<RowAlignmentPy>> {
+        let options = pixelmatch_count_options(threshold, include_aa)?;
+        let alignment_opts = row_alignment_options(max_edit_ratio, max_edit_rows)?;
+        let alignment = py
+            .allow_threads(|| self.inner.row_alignment(&options, &alignment_opts))
+            .map_err(to_py_err)?;
+
+        Py::new(py, row_alignment_py(py, alignment)?)
+    }
+
+    /// Cluster the residual differences, ignoring the shifted rows.
+    ///
+    /// The mask holds the residual only. The shift bands are the other half of
+    /// the answer: read `alignment.bands` to decide whether to absorb a shift or
+    /// flag it. Raises if the alignment failed or came from another image pair.
+    #[pyo3(signature = (alignment, threshold = 0.1, include_aa = false, min_pixels = 16, min_side = 0, dilation = 4, max_clusters = None, merge_gap = 0, merge_overlap = 0.5))]
+    fn aligned_clusters(
+        &self,
+        py: Python<'_>,
+        alignment: PyRef<'_, RowAlignmentPy>,
+        threshold: f64,
+        include_aa: bool,
+        min_pixels: usize,
+        min_side: usize,
+        dilation: usize,
+        max_clusters: Option<usize>,
+        merge_gap: usize,
+        merge_overlap: f64,
+    ) -> PyResult<Py<ClustersResultPy>> {
+        let options = pixelmatch_count_options(threshold, include_aa)?;
+        let cluster_opts = ClusterOptions {
+            min_pixels,
+            min_side,
+            dilation,
+            max_clusters,
+            merge_gap,
+            merge_overlap,
+        };
+        let inner = &alignment.inner;
+        let output = py
+            .allow_threads(|| self.inner.aligned_clusters(inner, &options, &cluster_opts))
+            .map_err(to_py_err)?;
+
+        clusters_result_py(py, output)
+    }
+
+    /// Generate the shift-aware diff image as PNG bytes, in current-image coordinates.
+    #[pyo3(signature = (
+        alignment,
+        threshold = 0.1,
+        alpha = 0.1,
+        include_aa = false,
+        diff_color = (255, 0, 0),
+        aa_color = (255, 255, 0),
+        diff_color_alt = None,
+    ))]
+    fn aligned_diff_image(
+        &self,
+        py: Python<'_>,
+        alignment: PyRef<'_, RowAlignmentPy>,
+        threshold: f64,
+        alpha: f64,
+        include_aa: bool,
+        diff_color: (u8, u8, u8),
+        aa_color: (u8, u8, u8),
+        diff_color_alt: Option<(u8, u8, u8)>,
+    ) -> PyResult<Py<PyBytes>> {
+        let options = pixelmatch_options(
+            threshold,
+            alpha,
+            include_aa,
+            diff_color,
+            aa_color,
+            diff_color_alt,
+        )?;
+        let inner = &alignment.inner;
+        let png = py
+            .allow_threads(|| self.inner.aligned_diff_image_png(inner, &options))
+            .map_err(to_py_err)?;
+        Ok(PyBytes::new(py, &png).into())
+    }
+
+    /// Compute SSIM over the matched rows only, so a shift does not lower the score.
+    #[pyo3(signature = (alignment,))]
+    fn aligned_ssim(&self, py: Python<'_>, alignment: PyRef<'_, RowAlignmentPy>) -> PyResult<f64> {
+        let inner = &alignment.inner;
+        py.allow_threads(|| self.inner.aligned_ssim(inner))
+            .map_err(to_py_err)
     }
 
     /// Generate a lossless WebP thumbnail of the current image.
@@ -602,6 +869,9 @@ fn pixelhog(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ClustersResultPy>()?;
     m.add_class::<ClusterPy>()?;
     m.add_class::<BoundingBoxPy>()?;
+    m.add_class::<RowAlignmentPy>()?;
+    m.add_class::<RowSegmentPy>()?;
+    m.add_class::<ShiftBandPy>()?;
 
     m.add_function(wrap_pyfunction!(thumbnail_py, m)?)?;
     m.add_function(wrap_pyfunction!(diff_batch_py, m)?)?;

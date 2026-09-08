@@ -628,7 +628,7 @@ impl U32Pixels<'_> {
     }
 }
 
-fn validate_options(options: &PixelmatchOptions) -> Result<(), Error> {
+pub(crate) fn validate_options(options: &PixelmatchOptions) -> Result<(), Error> {
     if !(0.0..=1.0).contains(&options.threshold) {
         return Err(Error::InvalidOption(
             "threshold must be in the range [0.0, 1.0]",
@@ -817,7 +817,7 @@ fn parity_from_ratio(index: usize, divisor: f64) -> f64 {
 }
 
 #[inline]
-fn draw_pixel(output: &mut [u8], pos: usize, r: u8, g: u8, b: u8) {
+pub(crate) fn draw_pixel(output: &mut [u8], pos: usize, r: u8, g: u8, b: u8) {
     output[pos] = r;
     output[pos + 1] = g;
     output[pos + 2] = b;
@@ -825,7 +825,7 @@ fn draw_pixel(output: &mut [u8], pos: usize, r: u8, g: u8, b: u8) {
 }
 
 #[inline]
-fn gray_pixel_value(img: &[u8], pos: usize, alpha: f64) -> u8 {
+pub(crate) fn gray_pixel_value(img: &[u8], pos: usize, alpha: f64) -> u8 {
     let val = 255.0
         + (img[pos] as f64 * 0.298_895_31
             + img[pos + 1] as f64 * 0.586_622_47

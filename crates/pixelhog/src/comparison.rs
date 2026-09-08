@@ -1,3 +1,7 @@
+use crate::alignment::{
+    aligned_clusters, aligned_diff_image_png, aligned_diff_image_rgba, aligned_ssim,
+    compute_row_alignment, pair_fingerprint, RowAlignment, RowAlignmentOptions, RowImages,
+};
 use crate::clusters::{compute_clusters, ClusterOptions, ClustersOutput};
 use crate::image_utils::{
     decode_png_rgba, encode_png, pad_images_to_largest_cow, thumbnail_webp_full,
@@ -9,6 +13,7 @@ use crate::pixelmatch::{
 use crate::ssim::compute_ssim_rgba;
 use crate::Error;
 use rayon::join;
+use std::sync::OnceLock;
 
 /// Holds a decoded, padded image pair ready for comparison.
 ///
@@ -26,6 +31,8 @@ pub struct Comparison {
     current_height: usize,
     // Original current image for thumbnail generation when sizes differ.
     current_original: Option<Vec<u8>>,
+    // Identifies this pair for row alignment, hashed on first use.
+    fingerprint: OnceLock<u64>,
 }
 
 impl Comparison {
@@ -94,6 +101,7 @@ impl Comparison {
             current_width,
             current_height,
             current_original,
+            fingerprint: OnceLock::new(),
         })
     }
 
@@ -186,6 +194,102 @@ impl Comparison {
     pub fn diff_image_png(&self, options: &PixelmatchOptions) -> Result<Vec<u8>, Error> {
         let output = self.diff_image_rgba(options)?;
         encode_png(&output.diff_rgba, self.width, self.height)
+    }
+
+    /// Borrow both images as rows over the shared padded stride.
+    fn row_images(&self) -> RowImages<'_> {
+        RowImages {
+            baseline_rgba: &self.baseline_rgba,
+            current_rgba: &self.current_rgba,
+            width: self.width,
+            baseline_width: self.baseline_width,
+            baseline_height: self.baseline_height,
+            current_width: self.current_width,
+            current_height: self.current_height,
+        }
+    }
+
+    /// This pair's fingerprint, hashed on first use.
+    fn fingerprint(&self) -> u64 {
+        *self
+            .fingerprint
+            .get_or_init(|| pair_fingerprint(&self.row_images()))
+    }
+
+    /// Align the rows of the two images to tell a vertical shift from real changes.
+    ///
+    /// Alignment is vertical only: a pair whose widths differ comes back
+    /// unaligned.
+    pub fn row_alignment(
+        &self,
+        pixel_options: &PixelmatchOptions,
+        options: &RowAlignmentOptions,
+    ) -> Result<RowAlignment, Error> {
+        let alignment = compute_row_alignment(&self.row_images(), pixel_options, options)?;
+
+        if alignment.aligned {
+            // The buffers never change, so a value already there is this value.
+            let _ = self.fingerprint.set(alignment.fingerprint());
+        }
+
+        Ok(alignment)
+    }
+
+    /// Cluster the residual differences inside `Replace` segments.
+    ///
+    /// The mask is in current-image coordinates and holds the residual only. The
+    /// shift bands are the other half of the answer: read
+    /// [`RowAlignment::bands`] to decide whether to absorb a shift or flag it.
+    pub fn aligned_clusters(
+        &self,
+        alignment: &RowAlignment,
+        pixel_options: &PixelmatchOptions,
+        cluster_options: &ClusterOptions,
+    ) -> Result<ClustersOutput, Error> {
+        aligned_clusters(
+            &self.row_images(),
+            alignment,
+            self.fingerprint(),
+            pixel_options,
+            cluster_options,
+        )
+    }
+
+    /// Build the shift-aware diff image in current-image coordinates.
+    pub fn aligned_diff_image_rgba(
+        &self,
+        alignment: &RowAlignment,
+        pixel_options: &PixelmatchOptions,
+    ) -> Result<PixelmatchOutput, Error> {
+        aligned_diff_image_rgba(
+            &self.row_images(),
+            alignment,
+            self.fingerprint(),
+            pixel_options,
+        )
+    }
+
+    /// PNG-encoded [`Comparison::aligned_diff_image_rgba`].
+    pub fn aligned_diff_image_png(
+        &self,
+        alignment: &RowAlignment,
+        pixel_options: &PixelmatchOptions,
+    ) -> Result<Vec<u8>, Error> {
+        aligned_diff_image_png(
+            &self.row_images(),
+            alignment,
+            self.fingerprint(),
+            pixel_options,
+        )
+    }
+
+    /// SSIM over the matched rows only, so a vertical shift does not lower the score.
+    ///
+    /// Inserted and deleted rows are dropped from both images before scoring.
+    /// Rows that were far apart become neighbors at the seams, so the SSIM
+    /// window picks up small artifacts there.
+    pub fn aligned_ssim(&self, alignment: &RowAlignment) -> Result<f64, Error> {
+        aligned_ssim(&self.row_images(), alignment, self.fingerprint())
     }
 
     /// Generate a lossless WebP thumbnail of the current image.
