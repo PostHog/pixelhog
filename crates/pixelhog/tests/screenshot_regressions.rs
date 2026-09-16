@@ -18,8 +18,9 @@ struct ScreenshotCase {
     /// these, so a change to what the diff image shows must not move them.
     counts: (usize, usize, usize),
     bands: Vec<ShiftBand>,
-    /// Rows of the current image where a cluster has to show the change, or
-    /// `None` when the pair only moved and must have no cluster at all.
+    /// Rows of the current image where the diff image and a cluster have to
+    /// show the change, or `None` when the pair only moved and must have no
+    /// cluster at all.
     changed_rows: Option<Range<usize>>,
 }
 
@@ -70,12 +71,13 @@ fn screenshot_regression_suite() {
         },
         // Story `errortracking-exceptioncard--exception-card-header-widths-with-action--dark`:
         // headings that re-rendered a pixel lower drew one-row bands across
-        // the card where nothing moved.
+        // the card where nothing moved. The heading change itself is drawn
+        // either way; the bands are what this case guards.
         ScreenshotCase {
             name: "card-heading-drift",
             counts: (3, 3, 1965),
             bands: vec![],
-            changed_rows: Some(68..77),
+            changed_rows: Some(56..68),
         },
         // Story `scenes-app-engineering-analytics-workflows--workflow-list--light`:
         // a panel grew by one row and nothing else changed. This is the shift
@@ -154,14 +156,24 @@ fn screenshot_regression_suite() {
             .aligned_clusters(&alignment, &options, &ClusterOptions::default())
             .expect("aligned clusters");
         match &case.changed_rows {
-            Some(rows) => assert!(
-                clusters.clusters.iter().any(|cluster| {
-                    let top = cluster.bbox.y;
-                    top < rows.end && top + cluster.bbox.height > rows.start
-                }),
-                "{}: no cluster over rows {rows:?}",
-                case.name
-            ),
+            Some(rows) => {
+                let stride = diff.width * 4;
+                assert!(
+                    diff.diff_rgba[rows.start * stride..rows.end * stride]
+                        .chunks_exact(4)
+                        .any(|px| px[..3] == options.diff_color || px[..3] == seam_color),
+                    "{}: no changed pixels drawn in rows {rows:?}",
+                    case.name
+                );
+                assert!(
+                    clusters.clusters.iter().any(|cluster| {
+                        let top = cluster.bbox.y;
+                        top < rows.end && top + cluster.bbox.height > rows.start
+                    }),
+                    "{}: no cluster over rows {rows:?}",
+                    case.name
+                );
+            }
             None => assert!(
                 clusters.clusters.is_empty(),
                 "{}: clusters where only rows moved",

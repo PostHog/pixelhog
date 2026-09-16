@@ -15,8 +15,7 @@
 //! position, because Myers minimizes edits: pairing the nth blank row with the
 //! nth blank row costs nothing, while any other pairing costs a delete and an
 //! insert. The same freedom lets Myers match blank rows inside a region whose
-//! content was replaced. The counts keep that result, and the diff image draws
-//! such a region as one change.
+//! content was replaced; `picture_segments` covers how the diff image draws it.
 //!
 //! Alignment is vertical only. Two images of different widths have no row in
 //! common by construction, so a width change disqualifies the pair.
@@ -105,13 +104,10 @@ pub struct RowAlignment {
     /// Differing pixels inside `Replace` segments, per the pixelmatch options.
     pub residual_count: usize,
     pub segments: Vec<RowSegment>,
-    /// Where the content below moved, drawn like the diff image draws it. A
-    /// region replaced across blank rows gives one band for the rows it gained
-    /// or lost, not one per insert and delete in `segments`.
+    /// Where the content below moved, as the diff image draws it. Band rows can
+    /// differ from `inserted_rows` and `deleted_rows`, which count `segments`.
     pub bands: Vec<ShiftBand>,
-    // What the diff image, the clusters and the bands draw. It differs from
-    // `segments` only where a region was replaced across blank rows; see
-    // `picture_segments`.
+    // What the diff image, the clusters and the bands draw; see `picture_segments`.
     picture: Vec<RowSegment>,
     // Row indices only mean something for the pair they were computed from, so
     // the aligned_* calls refuse an alignment that came from another pair.
@@ -438,6 +434,37 @@ fn segment(
     }
 }
 
+/// Push a `Replace` over the rows both sides cover, then the surplus of the longer side.
+fn push_paired(
+    segments: &mut Vec<RowSegment>,
+    baseline_start: usize,
+    current_start: usize,
+    baseline_len: usize,
+    current_len: usize,
+) {
+    let paired = baseline_len.min(current_len);
+    segments.push(segment(
+        RowSegmentKind::Replace,
+        baseline_start,
+        current_start,
+        paired,
+    ));
+
+    let (kind, surplus) = if baseline_len > paired {
+        (RowSegmentKind::Delete, baseline_len - paired)
+    } else {
+        (RowSegmentKind::Insert, current_len - paired)
+    };
+    if surplus > 0 {
+        segments.push(segment(
+            kind,
+            baseline_start + paired,
+            current_start + paired,
+            surplus,
+        ));
+    }
+}
+
 /// Pair an adjacent delete/insert couple into a `Replace`, leaving the surplus.
 ///
 /// Text that only jitters by an anti-aliased pixel deletes one row and inserts
@@ -476,32 +503,13 @@ fn pair_replacements(runs: &[EditRun]) -> Vec<RowSegment> {
             continue;
         };
 
-        let baseline_start = run.baseline_start.min(next.baseline_start);
-        let current_start = run.current_start.min(next.current_start);
-        let paired = delete_len.min(insert_len);
-
-        segments.push(segment(
-            RowSegmentKind::Replace,
-            baseline_start,
-            current_start,
-            paired,
-        ));
-
-        if delete_len > paired {
-            segments.push(segment(
-                RowSegmentKind::Delete,
-                baseline_start + paired,
-                current_start + paired,
-                delete_len - paired,
-            ));
-        } else if insert_len > paired {
-            segments.push(segment(
-                RowSegmentKind::Insert,
-                baseline_start + paired,
-                current_start + paired,
-                insert_len - paired,
-            ));
-        }
+        push_paired(
+            &mut segments,
+            run.baseline_start.min(next.baseline_start),
+            run.current_start.min(next.current_start),
+            delete_len,
+            insert_len,
+        );
 
         index += 2;
     }
@@ -564,20 +572,12 @@ impl<'a> RowHashes<'a> {
 
 /// Where a segment ends in the baseline and in the current image.
 fn segment_end(seg: &RowSegment) -> (usize, usize) {
-    let baseline_len = if seg.kind == RowSegmentKind::Insert {
-        0
-    } else {
-        seg.len
-    };
-    let current_len = if seg.kind == RowSegmentKind::Delete {
-        0
-    } else {
-        seg.len
-    };
-    (
-        seg.baseline_start + baseline_len,
-        seg.current_start + current_len,
-    )
+    let (baseline, current) = (seg.baseline_start, seg.current_start);
+    match seg.kind {
+        RowSegmentKind::Insert => (baseline, current + seg.len),
+        RowSegmentKind::Delete => (baseline + seg.len, current),
+        RowSegmentKind::Equal | RowSegmentKind::Replace => (baseline + seg.len, current + seg.len),
+    }
 }
 
 /// One past the last edit of the hunk that starts with the edit at `start`.
@@ -595,49 +595,15 @@ fn hunk_end(segments: &[RowSegment], start: usize, hashes: &RowHashes) -> usize 
     end
 }
 
-/// The rows a hunk covers as one `Replace`, then the surplus of the longer side.
-fn redraw_hunk(hunk: &[RowSegment], picture: &mut Vec<RowSegment>) {
-    let first = hunk[0];
-    let (baseline_end, current_end) = segment_end(&hunk[hunk.len() - 1]);
-    let baseline_len = baseline_end - first.baseline_start;
-    let current_len = current_end - first.current_start;
-    let paired = baseline_len.min(current_len);
-
-    picture.push(segment(
-        RowSegmentKind::Replace,
-        first.baseline_start,
-        first.current_start,
-        paired,
-    ));
-
-    if baseline_len > paired {
-        picture.push(segment(
-            RowSegmentKind::Delete,
-            first.baseline_start + paired,
-            first.current_start + paired,
-            baseline_len - paired,
-        ));
-    } else if current_len > paired {
-        picture.push(segment(
-            RowSegmentKind::Insert,
-            first.baseline_start + paired,
-            first.current_start + paired,
-            current_len - paired,
-        ));
-    }
-}
-
 /// The segments the diff image, the clusters and the bands draw.
 ///
 /// A region replaced by content of another height is one change to a reader.
 /// Myers threads the blank rows both versions have through that region, so its
 /// segments show separate inserts and deletes, and a diff image drawn from them
 /// shows bands where the content changed. The picture draws such a hunk as one
-/// changed region, then the rows one side has over the other. The segments stay
-/// as they are, because the counts, the residual and the SSIM come from them.
-///
-/// A hunk that inserts a row it also deletes holds content that moved, and it
-/// is drawn as its bands.
+/// changed region, then the rows one side has over the other, unless the hunk
+/// moves rows. The segments stay as they are, because the counts, the residual
+/// and the SSIM come from them.
 fn picture_segments(segments: &[RowSegment], hashes: &RowHashes) -> Vec<RowSegment> {
     let mut picture = Vec::with_capacity(segments.len());
     let mut index = 0;
@@ -656,7 +622,15 @@ fn picture_segments(segments: &[RowSegment], hashes: &RowHashes) -> Vec<RowSegme
         let has_insert = hunk.iter().any(|seg| seg.kind == RowSegmentKind::Insert);
         let has_delete = hunk.iter().any(|seg| seg.kind == RowSegmentKind::Delete);
         if has_insert && has_delete && !hashes.moves_rows(hunk) {
-            redraw_hunk(hunk, &mut picture);
+            let first = hunk[0];
+            let (baseline_end, current_end) = segment_end(&hunk[hunk.len() - 1]);
+            push_paired(
+                &mut picture,
+                first.baseline_start,
+                first.current_start,
+                baseline_end - first.baseline_start,
+                current_end - first.current_start,
+            );
         } else {
             picture.extend_from_slice(hunk);
         }
@@ -872,8 +846,7 @@ fn check_alignment(
 /// The mask is in current-image coordinates. Shift bands are not in it: the
 /// bands are the shift signal and the mask is the changed content, and a caller
 /// decides separately whether to absorb a shift or flag it, reading
-/// [`RowAlignment::bands`] for that. A region replaced across blank rows is
-/// clustered as the one region it is, like the diff image draws it.
+/// [`RowAlignment::bands`] for that.
 pub(crate) fn aligned_clusters(
     images: &RowImages,
     alignment: &RowAlignment,
@@ -923,10 +896,9 @@ fn draw_band(diff: &mut [u8], width: usize, height: usize, band: &ShiftBand, col
 /// pixelmatch coloring, inserted bands are filled with `diff_color`, and a
 /// deleted band is one seam row in `diff_color_alt` when set.
 ///
-/// The image draws the picture segments, not [`RowAlignment::segments`]: a
-/// region replaced across blank rows is one changed region here, where the
-/// segments hold separate inserts and deletes. `diff_count` counts the changed
-/// pixels drawn, so it can be larger than `residual_count` for such a pair.
+/// The image draws the picture segments, not [`RowAlignment::segments`]; see
+/// `picture_segments`. `diff_count` counts the changed pixels drawn, so it can
+/// be larger than `residual_count`.
 pub(crate) fn aligned_diff_image_rgba(
     images: &RowImages,
     alignment: &RowAlignment,
@@ -972,7 +944,7 @@ pub(crate) fn aligned_diff_image_rgba(
     let deleted_color = pixel_options
         .diff_color_alt
         .unwrap_or(pixel_options.diff_color);
-    for band in &alignment.bands {
+    for band in &shift_bands(&alignment.picture) {
         let color = match band.kind {
             ShiftBandKind::Inserted => pixel_options.diff_color,
             ShiftBandKind::Deleted => deleted_color,

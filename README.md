@@ -102,7 +102,7 @@ if alignment.aligned:
 | `inserted_rows` / `deleted_rows` | Rows the current image gained or lost — the shift itself. |
 | `changed_rows` | Rows present in both images whose content differs. |
 | `residual_count` | Differing pixels inside those changed rows. This is the number to threshold on: it excludes the shift. |
-| `bands` | Where the shift happened, in current-image coordinates. A deleted band is the seam row the removed rows left behind. |
+| `bands` | Where the content below moved, in current-image coordinates, as the diff image draws it. A deleted band is the seam row the removed rows left behind. Band rows can differ from the counts when a region was replaced. |
 
 The cluster mask holds the changed content only. Shift bands are the other half of the answer, so read
 `alignment.bands` to decide whether to absorb a shift or flag it.
