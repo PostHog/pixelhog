@@ -11,10 +11,12 @@
 //! pairing turns an adjacent delete and insert back into a content change, so
 //! anti-aliasing jitter on a text row is not reported as a shift.
 //!
-//! Rows repeated across the page (blank background, rules, spacers) need no
-//! special handling. Myers minimizes edits, so it matches them by position:
-//! pairing the nth blank row with the nth blank row costs nothing, while any
-//! other pairing costs a delete and an insert.
+//! Rows repeated across the page (blank background, rules, spacers) match by
+//! position, because Myers minimizes edits: pairing the nth blank row with the
+//! nth blank row costs nothing, while any other pairing costs a delete and an
+//! insert. The same freedom lets Myers match blank rows inside a region whose
+//! content was replaced. The counts keep that result, and the diff image draws
+//! such a region as one change.
 //!
 //! Alignment is vertical only. Two images of different widths have no row in
 //! common by construction, so a width change disqualifies the pair.
@@ -29,6 +31,7 @@ use crate::ssim::compute_ssim_rgba;
 use crate::Error;
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::Hasher;
 
 /// Options for row alignment.
@@ -102,7 +105,14 @@ pub struct RowAlignment {
     /// Differing pixels inside `Replace` segments, per the pixelmatch options.
     pub residual_count: usize,
     pub segments: Vec<RowSegment>,
+    /// Where the content below moved, drawn like the diff image draws it. A
+    /// region replaced across blank rows gives one band for the rows it gained
+    /// or lost, not one per insert and delete in `segments`.
     pub bands: Vec<ShiftBand>,
+    // What the diff image, the clusters and the bands draw. It differs from
+    // `segments` only where a region was replaced across blank rows; see
+    // `picture_segments`.
+    picture: Vec<RowSegment>,
     // Row indices only mean something for the pair they were computed from, so
     // the aligned_* calls refuse an alignment that came from another pair.
     width: usize,
@@ -122,6 +132,7 @@ impl RowAlignment {
             residual_count: 0,
             segments: Vec::new(),
             bands: Vec::new(),
+            picture: Vec::new(),
             width: images.width,
             baseline_height: images.baseline_height,
             current_height: images.current_height,
@@ -498,6 +509,162 @@ fn pair_replacements(runs: &[EditRun]) -> Vec<RowSegment> {
     segments
 }
 
+/// The row hashes of both images, with the rows that repeat in either one.
+struct RowHashes<'a> {
+    baseline: &'a [u64],
+    current: &'a [u64],
+    repeated: HashSet<u64>,
+}
+
+impl<'a> RowHashes<'a> {
+    fn new(baseline: &'a [u64], current: &'a [u64]) -> Self {
+        let mut repeated = HashSet::new();
+        for hashes in [baseline, current] {
+            let mut seen = HashSet::new();
+            for hash in hashes {
+                if !seen.insert(*hash) {
+                    repeated.insert(*hash);
+                }
+            }
+        }
+
+        Self {
+            baseline,
+            current,
+            repeated,
+        }
+    }
+
+    /// True for an equal segment that says nothing about where content went.
+    ///
+    /// A run of one repeated row (blank background, a spacer) can match any of
+    /// its copies at the same cost, so it does not show that the rows around it
+    /// stayed in place. Varied rows do, even when a list repeats them elsewhere.
+    fn is_filler(&self, seg: &RowSegment) -> bool {
+        seg.kind == RowSegmentKind::Equal
+            && uniform_hash(self.baseline, seg.baseline_start, seg.len)
+                .is_some_and(|hash| self.repeated.contains(&hash))
+    }
+
+    /// True when a row the hunk inserts equals a row it deletes: content that moved.
+    fn moves_rows(&self, hunk: &[RowSegment]) -> bool {
+        let deleted: HashSet<u64> = hunk
+            .iter()
+            .filter(|seg| seg.kind == RowSegmentKind::Delete)
+            .flat_map(|seg| &self.baseline[seg.baseline_start..seg.baseline_start + seg.len])
+            .copied()
+            .collect();
+
+        hunk.iter()
+            .filter(|seg| seg.kind == RowSegmentKind::Insert)
+            .flat_map(|seg| &self.current[seg.current_start..seg.current_start + seg.len])
+            .any(|hash| deleted.contains(hash))
+    }
+}
+
+/// Where a segment ends in the baseline and in the current image.
+fn segment_end(seg: &RowSegment) -> (usize, usize) {
+    let baseline_len = if seg.kind == RowSegmentKind::Insert {
+        0
+    } else {
+        seg.len
+    };
+    let current_len = if seg.kind == RowSegmentKind::Delete {
+        0
+    } else {
+        seg.len
+    };
+    (
+        seg.baseline_start + baseline_len,
+        seg.current_start + current_len,
+    )
+}
+
+/// One past the last edit of the hunk that starts with the edit at `start`.
+///
+/// A hunk is a group of edits with only filler rows between them.
+fn hunk_end(segments: &[RowSegment], start: usize, hashes: &RowHashes) -> usize {
+    let mut end = start + 1;
+    for (index, seg) in segments.iter().enumerate().skip(start + 1) {
+        if seg.kind != RowSegmentKind::Equal {
+            end = index + 1;
+        } else if !hashes.is_filler(seg) {
+            break;
+        }
+    }
+    end
+}
+
+/// The rows a hunk covers as one `Replace`, then the surplus of the longer side.
+fn redraw_hunk(hunk: &[RowSegment], picture: &mut Vec<RowSegment>) {
+    let first = hunk[0];
+    let (baseline_end, current_end) = segment_end(&hunk[hunk.len() - 1]);
+    let baseline_len = baseline_end - first.baseline_start;
+    let current_len = current_end - first.current_start;
+    let paired = baseline_len.min(current_len);
+
+    picture.push(segment(
+        RowSegmentKind::Replace,
+        first.baseline_start,
+        first.current_start,
+        paired,
+    ));
+
+    if baseline_len > paired {
+        picture.push(segment(
+            RowSegmentKind::Delete,
+            first.baseline_start + paired,
+            first.current_start + paired,
+            baseline_len - paired,
+        ));
+    } else if current_len > paired {
+        picture.push(segment(
+            RowSegmentKind::Insert,
+            first.baseline_start + paired,
+            first.current_start + paired,
+            current_len - paired,
+        ));
+    }
+}
+
+/// The segments the diff image, the clusters and the bands draw.
+///
+/// A region replaced by content of another height is one change to a reader.
+/// Myers threads the blank rows both versions have through that region, so its
+/// segments show separate inserts and deletes, and a diff image drawn from them
+/// shows bands where the content changed. The picture draws such a hunk as one
+/// changed region, then the rows one side has over the other. The segments stay
+/// as they are, because the counts, the residual and the SSIM come from them.
+///
+/// A hunk that inserts a row it also deletes holds content that moved, and it
+/// is drawn as its bands.
+fn picture_segments(segments: &[RowSegment], hashes: &RowHashes) -> Vec<RowSegment> {
+    let mut picture = Vec::with_capacity(segments.len());
+    let mut index = 0;
+
+    while index < segments.len() {
+        if segments[index].kind == RowSegmentKind::Equal {
+            picture.push(segments[index]);
+            index += 1;
+            continue;
+        }
+
+        let end = hunk_end(segments, index, hashes);
+        let hunk = &segments[index..end];
+        index = end;
+
+        let has_insert = hunk.iter().any(|seg| seg.kind == RowSegmentKind::Insert);
+        let has_delete = hunk.iter().any(|seg| seg.kind == RowSegmentKind::Delete);
+        if has_insert && has_delete && !hashes.moves_rows(hunk) {
+            redraw_hunk(hunk, &mut picture);
+        } else {
+            picture.extend_from_slice(hunk);
+        }
+    }
+
+    picture
+}
+
 /// Bands sit in current-image coordinates so they overlay the current screenshot.
 fn shift_bands(segments: &[RowSegment]) -> Vec<ShiftBand> {
     segments
@@ -644,7 +811,11 @@ pub(crate) fn compute_row_alignment(
 
     slide_edits_together(&mut runs, &baseline_hashes, &current_hashes);
     let segments = pair_replacements(&runs);
-    let bands = shift_bands(&segments);
+    let picture = picture_segments(
+        &segments,
+        &RowHashes::new(&baseline_hashes, &current_hashes),
+    );
+    let bands = shift_bands(&picture);
 
     let rows_of = |kind: RowSegmentKind| -> usize {
         segments
@@ -663,6 +834,7 @@ pub(crate) fn compute_row_alignment(
         residual_count: residual_count(images, &segments, pixel_options)?,
         segments,
         bands,
+        picture,
         width: images.width,
         baseline_height: images.baseline_height,
         current_height: images.current_height,
@@ -695,12 +867,13 @@ fn check_alignment(
     Ok(())
 }
 
-/// Cluster the residual — the pixels that differ inside `Replace` segments.
+/// Cluster the pixels that differ inside the changed regions the diff image draws.
 ///
 /// The mask is in current-image coordinates. Shift bands are not in it: the
-/// bands are the shift signal and the mask is the residual, and a caller decides
-/// separately whether to absorb a shift or flag it, reading
-/// [`RowAlignment::bands`] for that.
+/// bands are the shift signal and the mask is the changed content, and a caller
+/// decides separately whether to absorb a shift or flag it, reading
+/// [`RowAlignment::bands`] for that. A region replaced across blank rows is
+/// clustered as the one region it is, like the diff image draws it.
 pub(crate) fn aligned_clusters(
     images: &RowImages,
     alignment: &RowAlignment,
@@ -714,7 +887,7 @@ pub(crate) fn aligned_clusters(
     let width = images.width;
     let mut mask = vec![false; width * images.current_height];
 
-    for seg in replace_segments(&alignment.segments) {
+    for seg in replace_segments(&alignment.picture) {
         let segment_mask = segment_mask(images, seg, pixel_options)?;
         let start = seg.current_start * width;
         mask[start..start + seg.len * width].copy_from_slice(&segment_mask);
@@ -746,9 +919,14 @@ fn draw_band(diff: &mut [u8], width: usize, height: usize, band: &ShiftBand, col
 
 /// Build the diff image in current-image coordinates.
 ///
-/// Equal rows are grayed like pixelmatch does, `Replace` rows carry the usual
+/// Equal rows are grayed like pixelmatch does, changed rows carry the usual
 /// pixelmatch coloring, inserted bands are filled with `diff_color`, and a
 /// deleted band is one seam row in `diff_color_alt` when set.
+///
+/// The image draws the picture segments, not [`RowAlignment::segments`]: a
+/// region replaced across blank rows is one changed region here, where the
+/// segments hold separate inserts and deletes. `diff_count` counts the changed
+/// pixels drawn, so it can be larger than `residual_count` for such a pair.
 pub(crate) fn aligned_diff_image_rgba(
     images: &RowImages,
     alignment: &RowAlignment,
@@ -773,7 +951,7 @@ pub(crate) fn aligned_diff_image_rgba(
     }
 
     let mut diff_count = 0;
-    for seg in replace_segments(&alignment.segments) {
+    for seg in replace_segments(&alignment.picture) {
         let window = segment_window(images, seg);
         let output = pixelmatch_rgba(
             window.baseline,
@@ -880,6 +1058,53 @@ mod tests {
             myers_diff(baseline, current, max_d).expect("diff should fit the budget");
         slide_edits_together(&mut runs, baseline, current);
         (edit_distance, pair_replacements(&runs))
+    }
+
+    fn picture_of(baseline: &[u64], current: &[u64]) -> (Vec<RowSegment>, Vec<RowSegment>) {
+        let (_, segments) = segments_of(baseline, current, 32);
+        let picture = picture_segments(&segments, &RowHashes::new(baseline, current));
+        (segments, picture)
+    }
+
+    #[test]
+    fn content_swapped_across_blank_rows_draws_as_one_change() {
+        // A tall chart (20..=23) swapped for a short one (30, 31), with the blank
+        // row 0 above, below and between them. Myers matches the blank rows
+        // inside the region, so the segments read as a shift.
+        let baseline = [1u64, 0, 0, 20, 21, 22, 23, 0, 0, 9];
+        let current = [1u64, 0, 30, 0, 31, 0, 9];
+
+        let (segments, picture) = picture_of(&baseline, &current);
+
+        assert!(segments.iter().any(|s| s.kind == RowSegmentKind::Insert));
+        assert!(segments.iter().any(|s| s.kind == RowSegmentKind::Delete));
+        assert_eq!(
+            picture,
+            vec![
+                segment(RowSegmentKind::Equal, 0, 0, 2),
+                segment(RowSegmentKind::Replace, 2, 2, 3),
+                segment(RowSegmentKind::Delete, 5, 5, 3),
+                segment(RowSegmentKind::Equal, 8, 5, 1),
+                segment(RowSegmentKind::Equal, 9, 6, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn moved_rows_and_varied_gaps_draw_as_their_segments() {
+        let cases: [(&[u64], &[u64]); 2] = [
+            // A line that moved down through blank rows.
+            (&[1, 5, 0, 0, 0, 9], &[1, 0, 0, 0, 5, 9]),
+            // Rows 2 and 3 repeat at the end, the way a list repeats its items,
+            // but they differ from each other and so keep the edits apart.
+            (&[1, 7, 2, 3, 4, 5, 2, 3], &[1, 2, 3, 8, 4, 5, 2, 3]),
+        ];
+
+        for (baseline, current) in cases {
+            let (segments, picture) = picture_of(baseline, current);
+            assert!(segments.iter().any(|s| s.kind == RowSegmentKind::Insert));
+            assert_eq!(picture, segments);
+        }
     }
 
     #[test]

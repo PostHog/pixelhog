@@ -57,7 +57,7 @@ thumb = thumbnail(current_png, width=200, height=150)
 | `.ssim()` | `float` | Structural similarity |
 | `.clusters(dilation, merge_gap, ...)` | `ClustersResult` | Spatial regions of change |
 | `.row_alignment(...)` | `RowAlignment` | Separate a vertical shift from real changes |
-| `.aligned_clusters(alignment, ...)` | `ClustersResult` | Clusters of the residual only |
+| `.aligned_clusters(alignment, ...)` | `ClustersResult` | Clusters of the changed content, shift left out |
 | `.aligned_ssim(alignment)` | `float` | SSIM over the matched rows only |
 | `.aligned_diff_image(alignment, ...)` | `bytes` (PNG) | Shift-aware diff visualization |
 | `.diff_image(...)` | `bytes` (PNG) | Diff visualization |
@@ -91,7 +91,7 @@ if alignment.aligned:
     for band in alignment.bands:
         print(band.kind, band.y, band.rows)      # "inserted" / "deleted", current-image rows
 
-    clusters = cmp.aligned_clusters(alignment)   # clusters of the residual only
+    clusters = cmp.aligned_clusters(alignment)   # clusters of the changed content
     score = cmp.aligned_ssim(alignment)          # SSIM over the matched rows only
     png = cmp.aligned_diff_image(alignment)      # diff image in current-image coordinates
 ```
@@ -104,8 +104,13 @@ if alignment.aligned:
 | `residual_count` | Differing pixels inside those changed rows. This is the number to threshold on: it excludes the shift. |
 | `bands` | Where the shift happened, in current-image coordinates. A deleted band is the seam row the removed rows left behind. |
 
-The cluster mask holds the residual only. Shift bands are the other half of the answer, so read
-`alignment.bands` to decide whether to absorb a shift or flag it. An alignment belongs to the pair
+The cluster mask holds the changed content only. Shift bands are the other half of the answer, so read
+`alignment.bands` to decide whether to absorb a shift or flag it.
+
+A region replaced by content of a different height, such as a tall chart swapped for a short one, keeps blank rows that both versions share.
+The Myers diff matches those blank rows inside the region, so the fields above report the change as separate inserted and deleted rows.
+`aligned_diff_image()`, `aligned_clusters()` and `bands` show such a region as one changed region instead, followed by the rows one side has over the other.
+The counts and `residual_count` do not change, so thresholds that read them behave as before. An alignment belongs to the pair
 it was computed from; passing it to another `Comparison` raises. Tune the bail-out with
 `max_edit_ratio` (default 0.25) and `max_edit_rows` (default 2048).
 

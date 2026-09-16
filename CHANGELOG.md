@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.1
+
+**Replaced regions in the aligned diff image.** A region replaced by content of a different height
+keeps the blank rows both versions share, and the row diff matched those rows inside the region. The
+aligned diff image then showed solid bands and seams across a chart that had changed, and no change
+inside it. `aligned_diff_image()`, `aligned_clusters()` and `bands` now show edits that only blank
+rows separate as one changed region, followed by the rows one side has over the other. Moved content
+keeps its bands. `inserted_rows`, `deleted_rows`, `changed_rows`, `residual_count` and
+`aligned_ssim()` do not change, so callers that threshold on them behave as before.
+
 ## 1.3.0
 
 **Row alignment.** New `row_alignment()` tells a vertical shift from a real change. It hashes

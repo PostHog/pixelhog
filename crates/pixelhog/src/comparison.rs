@@ -235,10 +235,10 @@ impl Comparison {
         Ok(alignment)
     }
 
-    /// Cluster the residual differences inside `Replace` segments.
+    /// Cluster the changed content the aligned diff image draws.
     ///
-    /// The mask is in current-image coordinates and holds the residual only. The
-    /// shift bands are the other half of the answer: read
+    /// The mask is in current-image coordinates and holds the changed content
+    /// only. The shift bands are the other half of the answer: read
     /// [`RowAlignment::bands`] to decide whether to absorb a shift or flag it.
     pub fn aligned_clusters(
         &self,
