@@ -730,11 +730,12 @@ impl ComparisonPy {
         Py::new(py, row_alignment_py(py, alignment)?)
     }
 
-    /// Cluster the residual differences, ignoring the shifted rows.
+    /// Cluster the changed content, ignoring the shifted rows.
     ///
-    /// The mask holds the residual only. The shift bands are the other half of
-    /// the answer: read `alignment.bands` to decide whether to absorb a shift or
-    /// flag it. Raises if the alignment failed or came from another image pair.
+    /// The mask holds the changed content only, drawn like `aligned_diff_image`.
+    /// The shift bands are the other half of the answer: read `alignment.bands`
+    /// to decide whether to absorb a shift or flag it. Raises if the alignment
+    /// failed or came from another image pair.
     #[pyo3(signature = (alignment, threshold = 0.1, include_aa = false, min_pixels = 16, min_side = 0, dilation = 4, max_clusters = None, merge_gap = 0, merge_overlap = 0.5))]
     fn aligned_clusters(
         &self,
